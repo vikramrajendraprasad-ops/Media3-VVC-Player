@@ -72,4 +72,3 @@ jobs:
         with:
           name: Media3-VVC-Player
           path: demos/main/build/outputs/apk/release/*.apk
-          
