@@ -36,14 +36,9 @@ jobs:
         run: |
           cd media/libraries/decoder_ffmpeg/src/main/jni
           chmod +x build_ffmpeg.sh
-          
-          # FIX 1: Force 64-bit only
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
-          
-          # FIX 2: Remove the "postproc" option which was deleted in FFmpeg 8.0
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
           
-          # CORRECT ARGUMENTS: ModulePath, NDKPath, Host, ABI_Level, Decoders
           ./build_ffmpeg.sh \
             "$(pwd)/.." \
             "${{ steps.setup-ndk.outputs.ndk-path }}" \
@@ -63,10 +58,12 @@ jobs:
         run: |
           cd media
           chmod +x gradlew
-          ./gradlew :demo-main:assembleDebug
+          # FIXED: The project is named :demo, not :demo-main
+          ./gradlew :demo:assembleDebug
 
       - name: Upload Finished APK
         uses: actions/upload-artifact@v4
         with:
           name: Media3-VVC-App
+          # Path update for the :demo project
           path: media/demos/main/build/outputs/apk/debug/*.apk
