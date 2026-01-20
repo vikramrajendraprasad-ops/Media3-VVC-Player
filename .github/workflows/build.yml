@@ -12,29 +12,31 @@ jobs:
         ref: main
     - name: Install Dependencies
       run: |
-        sudo apt-get update
-        sudo apt-get install -y nasm make autoconf automake libtool pkg-config git
+        sudo apt-get update && sudo apt-get install -y nasm make autoconf automake libtool pkg-config git
     - uses: actions/setup-java@v4
       with:
         java-version: 17
         distribution: temurin
-    - name: Setup NDK
+    - name: Setup NDK r25c  # FIXED: Use r25c (stable for Media3)
       id: setup-ndk
       uses: nttld/setup-ndk@v1
       with:
-        ndk-version: r26b
+        ndk-version: r25c
     - name: Prepare FFmpeg
       run: |
         git clone --depth 1 --branch master https://github.com/FFmpeg/FFmpeg.git ffmpeg_source
         ln -s "$(pwd)/ffmpeg_source" "$(pwd)/media/libraries/decoder_ffmpeg/src/main/jni/ffmpeg"
-    - name: Build FFmpeg
+    - name: Build FFmpeg  # FIXED: Proper env vars
+      env:
+        FFMPEG_MODULE_PATH: ${{ github.workspace }}/media/libraries/decoder_ffmpeg/src/main
       run: |
         cd media/libraries/decoder_ffmpeg/src/main/jni
         chmod +x build_ffmpeg.sh
         sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
-        NDK_PATH="${{ steps.setup-ndk.outputs.ndk-path }}"
-        echo "NDK_PATH is: $NDK_PATH"
-        MODULE_PATH="$(pwd)/.." ./build_ffmpeg.sh "$MODULE_PATH" "$NDK_PATH" "linux-x86_64" "arm64-v8a" vvc apv h264 hevc av1
+        export NDK_PATH="${{ steps.setup-ndk.outputs.ndk-path }}"
+        export ANDROID_ABI="arm64-v8a"
+        export HOST_PLATFORM="linux-x86_64"
+        ./build_ffmpeg.sh h264 hevc av1 vvc apv  # Decoders LAST
     - name: Patch Code
       run: |
         cd media
