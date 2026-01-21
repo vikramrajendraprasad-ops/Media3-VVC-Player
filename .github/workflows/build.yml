@@ -40,10 +40,19 @@ jobs:
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
           ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" "24" vvc apv iamf opus h264 hevc
 
-      - name: Patch UI & Intent Filters
+      - name: Patch UI & Intent Filters (Smart Search)
         run: |
-          # 1. Broad Intent Filter for "Open With" (Includes MP4, MKV, VVC, APV)
-          MANIFEST="media/demos/main/src/main/AndroidManifest.xml"
+          # 1. Find the Manifest and Layout files automatically
+          MANIFEST=$(find media -name "AndroidManifest.xml" | grep "demos/main" | head -n 1)
+          LAYOUT=$(find media -name "sample_selection_activity.xml" | head -n 1)
+          ACTIVITY=$(find media -name "SampleSelectionActivity.java" | head -n 1)
+          
+          echo "Found Manifest: $MANIFEST"
+          echo "Found Layout: $LAYOUT"
+          echo "Found Activity: $ACTIVITY"
+
+          # 2. Inject Intent Filter for "Open With"
+          # This uses double-escaping for the regex to survive the YAML/Shell combo
           sed -i '/<activity android:name="androidx.media3.demo.main.PlayerActivity"/a \
             <intent-filter>\
                 <action android:name="android.intent.action.VIEW" \/>\
@@ -52,30 +61,28 @@ jobs:
                 <data android:scheme="file" \/>\
                 <data android:scheme="content" \/>\
                 <data android:mimeType="*/*" \/>\
-                <data android:pathPattern=".*\\\\.vvc" \/>\
-                <data android:pathPattern=".*\\\\.apv" \/>\
-                <data android:pathPattern=".*\\\\.iamf" \/>\
-                <data android:pathPattern=".*\\\\.mkv" \/>\
-            <\/intent-filter>' $MANIFEST
+                <data android:pathPattern=".*\\.vvc" \/>\
+                <data android:pathPattern=".*\\.apv" \/>\
+                <data android:pathPattern=".*\\.mkv" \/>\
+            <\/intent-filter>' "$MANIFEST"
 
-          # 2. Add "PICK FILE" Button to the main list
-          LAYOUT="media/demos/main/src/main/res/layout/sample_selection_activity.xml"
-          sed -i '/<androidx.recyclerview.widget.RecyclerView/i \    <Button android:id="@+id/btn_pick_pro" android:layout_width="match_parent" android:layout_height="64dp" android:text="📂 OPEN LOCAL VIDEO (VVC/APV/IAMF)" android:textSize="14sp" android:backgroundTint="#6200EE" android:textColor="#FFFFFF" \/>' $LAYOUT
+          # 3. Add "PICK FILE" Button to the Layout
+          sed -i '/<androidx.recyclerview.widget.RecyclerView/i \    <Button android:id="@+id/btn_pick_pro" android:layout_width="match_parent" android:layout_height="64dp" android:text="📂 OPEN LOCAL VIDEO (VVC/APV/IAMF)" android:textSize="14sp" android:backgroundTint="#6200EE" android:textColor="#FFFFFF" \/>' "$LAYOUT"
 
-          # 3. Inject Java Logic for File Picking
-          ACTIVITY="media/demos/main/src/main/java/androidx/media3/demo/main/SampleSelectionActivity.java"
-          sed -i '/import android.view.View;/a import android.widget.Button;' $ACTIVITY
-          sed -i '/setContentView(R.layout.sample_selection_activity);/a \    findViewById(R.id.btn_pick_pro).setOnClickListener(v -> {\n        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);\n        intent.addCategory(Intent.CATEGORY_OPENABLE);\n        intent.setType("*/*");\n        startActivityForResult(intent, 0);\n    });' $ACTIVITY
+          # 4. Inject Java Logic for File Picking
+          sed -i '/import android.view.View;/a import android.widget.Button;' "$ACTIVITY"
+          sed -i '/setContentView(R.layout.sample_selection_activity);/a \    findViewById(R.id.btn_pick_pro).setOnClickListener(v -> {\n        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);\n        intent.addCategory(Intent.CATEGORY_OPENABLE);\n        intent.setType("*/*");\n        startActivityForResult(intent, 0);\n    });' "$ACTIVITY"
 
       - name: Register Codecs & IAMF Module
         run: |
-          # Add IAMF Library dependency
-          GRADLE_FILE="media/demos/main/build.gradle"
-          sed -i '/dependencies {/a \    implementation "androidx.media3:media3-decoder-iamf:1.6.0"' $GRADLE_FILE
+          GRADLE_FILE=$(find media -name "build.gradle" | grep "demos/main" | head -n 1)
+          sed -i '/dependencies {/a \    implementation "androidx.media3:media3-decoder-iamf:1.6.0"' "$GRADLE_FILE"
           
-          # Register new MIME types in FFmpeg Bridge
-          LIB_FILE="media/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/FfmpegLibrary.java"
-          sed -i '/"video\/hevc"/a \    "video\/vvc",\n    "video\/apv",\n    "audio\/iamf",' $LIB_FILE
+          LIB_FILE=$(find media -name "FfmpegLibrary.java")
+          sed -i '/"video\/hevc"/a \    "video\/vvc",\n    "video\/apv",\n    "audio\/iamf",' "$LIB_FILE"
+          
+          UTIL=$(find media -name "DemoUtil.java")
+          sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL"
 
       - name: Final Compilation
         run: |
