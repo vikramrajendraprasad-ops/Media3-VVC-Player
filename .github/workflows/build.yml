@@ -40,12 +40,12 @@ jobs:
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
           ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" "24" vvc apv iamf opus h264 hevc
 
-      - name: Java-Side UI Injection (No XML Editing)
+      - name: 🛡️ Inject UI & Logic (The Bridge Fix)
         run: |
           MANIFEST=$(find media/demos/main -name "AndroidManifest.xml" | head -n 1)
           ACTIVITY=$(find media/demos/main -name "SampleChooserActivity.java" | head -n 1)
 
-          # 1. Inject Intent Filter (System-wide Open With)
+          # 1. Inject Intent Filter (Ensures PlayerActivity accepts files)
           sed -i '/android:name="androidx.media3.demo.main.PlayerActivity"/a \
             <intent-filter>\
                 <action android:name="android.intent.action.VIEW" \/>\
@@ -56,18 +56,13 @@ jobs:
                 <data android:mimeType="*/*" \/>\
             <\/intent-filter>' "$MANIFEST"
 
-          # 2. Inject Button via Java Code
-          # This adds the button programmatically, bypassing XML parsing errors entirely.
-          # We look for 'setContentView' and append our UI logic immediately after it.
-          
-          # First, clean any previous bad imports just in case
+          # 2. Inject The Purple Button (UI)
+          # We clean up previous imports first to be safe
           sed -i '/import android.widget.Button;/d' "$ACTIVITY"
           
-          # Inject the UI logic block
-          # We use a FrameLayout parameter to float the button at the top of the screen
+          # Add the button logic
           sed -i '/setContentView/a \
             \
-            // --- INJECTED PRO PLAYER BUTTON ---\
             android.widget.Button proBtn = new android.widget.Button(this);\
             proBtn.setText("📂 OPEN LOCAL FILE (VVC/APV)");\
             proBtn.setBackgroundColor(0xFF6200EE);\
@@ -77,29 +72,56 @@ jobs:
                 android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);\
                 intent.addCategory(android.content.Intent.CATEGORY_OPENABLE);\
                 intent.setType("*/*");\
-                startActivityForResult(intent, 0);\
+                startActivityForResult(intent, 1001);\
             });\
-            \
             android.widget.FrameLayout.LayoutParams params = new android.widget.FrameLayout.LayoutParams(\
                 android.view.ViewGroup.LayoutParams.MATCH_PARENT,\
                 200\
             );\
             params.gravity = android.view.Gravity.TOP;\
-            params.topMargin = 0;\
-            addContentView(proBtn, params);\
-            // -----------------------------------' "$ACTIVITY"
+            addContentView(proBtn, params);' "$ACTIVITY"
+
+          # 3. Inject The Bridge (onActivityResult) - THIS FIXES THE "NO PLAY" ISSUE
+          # We use Python to find the END of the class and insert the handler method
+          python3 - <<EOF
+          import os
+          path = '$ACTIVITY'
+          if os.path.exists(path):
+              with open(path, 'r') as f:
+                  content = f.read()
+              
+              # Find the very last closing brace '}' of the class
+              last_brace = content.rfind('}')
+              
+              # The missing logic that catches the file and starts the player
+              bridge_logic = '''
+              @Override
+              public void onActivityResult(int requestCode, int resultCode, android.content.Intent data) {
+                  super.onActivityResult(requestCode, resultCode, data);
+                  if (requestCode == 1001 && resultCode == RESULT_OK && data != null && data.getData() != null) {
+                      android.content.Intent playerIntent = new android.content.Intent(this, androidx.media3.demo.main.PlayerActivity.class);
+                      playerIntent.setAction(android.content.Intent.ACTION_VIEW);
+                      playerIntent.setData(data.getData());
+                      startActivity(playerIntent);
+                  }
+              }
+              '''
+              
+              if last_brace != -1:
+                  # Insert the logic before the final brace
+                  new_content = content[:last_brace] + bridge_logic + content[last_brace:]
+                  with open(path, 'w') as f:
+                      f.write(new_content)
+                  print(f'Successfully injected Bridge Logic into {path}')
+          EOF
 
       - name: Register Codecs & Cleanup
         run: |
-          # Enable VVC/APV/IAMF in the FFmpeg Bridge
           LIB_FILE=$(find media -name "FfmpegLibrary.java" | head -n 1)
           sed -i '/"video\/hevc"/a \    "video\/vvc",\n    "video\/apv",\n    "audio\/iamf",' "$LIB_FILE"
           
-          # Force Extension Preference
           UTIL=$(find media -name "DemoUtil.java" | head -n 1)
           sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL"
-
-          # Remove deprecated 'package' attribute from manifests to fix merge warnings
           find media -name "AndroidManifest.xml" -exec sed -i 's/package="androidx.media3[^"]*"//g' {} +
 
       - name: Final Compilation
