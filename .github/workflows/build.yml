@@ -57,7 +57,8 @@ jobs:
                 <data android:mimeType="*/*" \/>\
             <\/intent-filter>' "$MANIFEST"
 
-          # 2. Python Surgical Injection (Fixed YAML Syntax with Pipe '|')
+          # 2. Python Surgical Injection (Self-Contained Namespace)
+          # We define xmlns:android locally on the button to prevent "Prefix Unbound" errors
           python3 - <<EOF
           import os
           path = '$LAYOUT'
@@ -65,8 +66,10 @@ jobs:
               with open(path, 'r') as f:
                   lines = f.readlines()
               
+              # The magic fix: xmlns:android is explicitly defined here
               button_code = [
                   '    <Button\n',
+                  '        xmlns:android="http://schemas.android.com/apk/res/android"\n',
                   '        android:id="@+id/btn_pick_pro"\n',
                   '        android:layout_width="match_parent"\n',
                   '        android:layout_height="72dp"\n',
@@ -76,12 +79,22 @@ jobs:
                   '        android:layout_margin="12dp" />\n'
               ]
               
-              # Find the first line that closes the root tag (usually line with '>')
+              # Find the end of the root tag (look for the first line with '>')
+              # This ensures we are INSIDE the root element
               for i, line in enumerate(lines):
-                  if '>' in line:
-                      # Insert button immediately after the root element opening tag
+                  if '>' in line and '<?xml' not in line:
+                      # Split the line at '>' to handle cases where content starts immediately
+                      parts = line.split('>', 1)
+                      # Reconstruct the line: [Tag Start] > [Button Code] [Rest of File]
+                      lines[i] = parts[0] + '>\n'
+                      
+                      # Inject our button lines
                       for j, btn_line in enumerate(button_code):
                           lines.insert(i + 1 + j, btn_line)
+                      
+                      # Ensure the rest of the original line is preserved on the next line
+                      if len(parts) > 1 and parts[1].strip():
+                          lines.insert(i + 1 + len(button_code), parts[1])
                       break
                       
               with open(path, 'w') as f:
@@ -100,6 +113,8 @@ jobs:
           
           UTIL=$(find media -name "DemoUtil.java" | head -n 1)
           sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL"
+          
+          # Clean manifest to prevent merge conflicts
           find media -name "AndroidManifest.xml" -exec sed -i 's/package="androidx.media3[^"]*"//g' {} +
 
       - name: Final Compilation
