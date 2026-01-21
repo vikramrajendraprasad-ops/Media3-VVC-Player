@@ -40,15 +40,24 @@ jobs:
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
           ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" "24" vvc apv iamf opus h264 hevc
 
-      - name: Brute Force UI & Intent Patch
+      - name: Hardened UI & Intent Patch
         run: |
-          # 1. Locate files precisely
+          # 1. Locate Manifest
           MANIFEST=$(find media/demos/main -name "AndroidManifest.xml" | head -n 1)
-          LAYOUT=$(find media/demos/main -name "sample_selection_activity.xml" -o -name "sample_list.xml" | head -n 1)
-          ACTIVITY=$(find media/demos/main -name "SampleSelectionActivity.java" | head -n 1)
+          
+          # 2. Find the Java Activity that handles the sample list by searching for "ExoPlayer" title logic
+          ACTIVITY=$(grep -l "setContentView" -r media/demos/main/src/main/java | xargs grep -l "Sample" | head -n 1)
+          
+          # 3. Find the Layout by looking at what that Activity loads
+          LAYOUT_NAME=$(grep "setContentView(R.layout." "$ACTIVITY" | sed 's/.*R.layout.\([^)]*\).*/\1/')
+          LAYOUT=$(find media/demos/main -name "${LAYOUT_NAME}.xml" | head -n 1)
 
-          # 2. Inject Intent Filter (System-wide Open With)
-          # We use a broader mimeType catch-all to ensure your Poco X3 displays the icon
+          echo "Detected Manifest: $MANIFEST"
+          echo "Detected Activity: $ACTIVITY"
+          echo "Detected Layout: $LAYOUT"
+
+          # 4. Inject Intent Filter (System-wide Open With)
+          # We use broad categories to ensure the icon appears in Mi File Manager
           sed -i '/<activity android:name="androidx.media3.demo.main.PlayerActivity"/a \
             <intent-filter>\
                 <action android:name="android.intent.action.VIEW" \/>\
@@ -56,30 +65,28 @@ jobs:
                 <category android:name="android.intent.category.BROWSABLE" \/>\
                 <data android:scheme="file" \/>\
                 <data android:scheme="content" \/>\
-                <data android:mimeType="video\/*" \/>\
-                <data android:mimeType="application\/*" \/>\
+                <data android:mimeType="*/*" \/>\
             <\/intent-filter>' "$MANIFEST"
 
-          # 3. Inject Purple Button at the top of the View Hierarchy
-          # This inserts it inside the root LinearLayout so it appears above the sample list
-          sed -i '/<LinearLayout/a \    <Button android:id="@+id/btn_pick_pro" android:layout_width="match_parent" android:layout_height="72dp" android:text="📂 OPEN LOCAL VIDEO (VVC/APV/IAMF)" android:backgroundTint="#6200EE" android:textColor="#FFFFFF" android:layout_margin="12dp" android:elevation="4dp" \/>' "$LAYOUT"
+          # 5. Inject Purple Button into the Layout
+          # We place it at the top of the first container found
+          if [ -n "$LAYOUT" ]; then
+            sed -i '0,/<[^>]*Layout/s//&\n    <Button android:id="@+id\/btn_pick_pro" android:layout_width="match_parent" android:layout_height="72dp" android:text="📂 OPEN LOCAL VIDEO (VVC\/APV\/IAMF)" android:backgroundTint="#6200EE" android:textColor="#FFFFFF" android:layout_margin="12dp" \/>/' "$LAYOUT"
+          fi
 
-          # 4. Inject Java Button Logic
+          # 6. Inject Java Button Logic
           sed -i '/import android.view.View;/a import android.widget.Button;' "$ACTIVITY"
           sed -i '/setContentView/a \    View b = findViewById(R.id.btn_pick_pro);\n    if(b != null) b.setOnClickListener(v -> {\n        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);\n        i.addCategory(Intent.CATEGORY_OPENABLE);\n        i.setType("*/*");\n        startActivityForResult(i, 0);\n    });' "$ACTIVITY"
 
-      - name: Register Codecs in Bridge
+      - name: Final Compilation
         run: |
-          # Register new MIME types for the FFmpeg decoder bridge
+          # Register decoders and force extension mode
           LIB_FILE=$(find media -name "FfmpegLibrary.java" | head -n 1)
           sed -i '/"video\/hevc"/a \    "video\/vvc",\n    "video\/apv",\n    "audio\/iamf",' "$LIB_FILE"
           
-          # Force Extension Mode to PREFER
           UTIL=$(find media -name "DemoUtil.java" | head -n 1)
           sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL"
 
-      - name: Final Compilation
-        run: |
           cd media
           chmod +x gradlew
           ./gradlew :demo:assembleDebug
