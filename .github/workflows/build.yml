@@ -57,29 +57,37 @@ jobs:
                 <data android:mimeType="*/*" \/>\
             <\/intent-filter>' "$MANIFEST"
 
-          # 2. Python Surgical Injection into Layout (Fixes XML Parse Errors)
-          python3 -c "
-import os
-path = '$LAYOUT'
-if os.path.exists(path):
-    with open(path, 'r') as f:
-        content = f.read()
-    # Find the end of the root tag (the first >)
-    index = content.find('>') + 1
-    button_code = '''
-    <Button
-        android:id=\"@+id/btn_pick_pro\"
-        android:layout_width=\"match_parent\"
-        android:layout_height=\"72dp\"
-        android:text=\"📂 OPEN LOCAL VIDEO (VVC/APV/IAMF)\"
-        android:backgroundTint=\"#6200EE\"
-        android:textColor=\"#FFFFFF\"
-        android:layout_margin=\"12dp\" />'''
-    new_content = content[:index] + button_code + content[index:]
-    with open(path, 'w') as f:
-        f.write(new_content)
-    print(f'Successfully patched {path}')
-"
+          # 2. Python Surgical Injection (Fixed YAML Syntax with Pipe '|')
+          python3 - <<EOF
+          import os
+          path = '$LAYOUT'
+          if os.path.exists(path):
+              with open(path, 'r') as f:
+                  lines = f.readlines()
+              
+              button_code = [
+                  '    <Button\n',
+                  '        android:id="@+id/btn_pick_pro"\n',
+                  '        android:layout_width="match_parent"\n',
+                  '        android:layout_height="72dp"\n',
+                  '        android:text="📂 OPEN LOCAL VIDEO (VVC/APV/IAMF)"\n',
+                  '        android:backgroundTint="#6200EE"\n',
+                  '        android:textColor="#FFFFFF"\n',
+                  '        android:layout_margin="12dp" />\n'
+              ]
+              
+              # Find the first line that closes the root tag (usually line with '>')
+              for i, line in enumerate(lines):
+                  if '>' in line:
+                      # Insert button immediately after the root element opening tag
+                      for j, btn_line in enumerate(button_code):
+                          lines.insert(i + 1 + j, btn_line)
+                      break
+                      
+              with open(path, 'w') as f:
+                  f.writelines(lines)
+              print(f'Successfully patched {path}')
+          EOF
 
           # 3. Inject Java Button Logic
           sed -i '/import android.view.View;/a import android.widget.Button;' "$ACTIVITY"
@@ -92,8 +100,6 @@ if os.path.exists(path):
           
           UTIL=$(find media -name "DemoUtil.java" | head -n 1)
           sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL"
-
-          # Remove deprecated package attributes that cause merge failures
           find media -name "AndroidManifest.xml" -exec sed -i 's/package="androidx.media3[^"]*"//g' {} +
 
       - name: Final Compilation
