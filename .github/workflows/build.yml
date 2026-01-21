@@ -42,14 +42,11 @@ jobs:
 
       - name: Precise UI & Intent Patch
         run: |
-          # 1. Targets confirmed from your logs
           MANIFEST=$(find media/demos/main -name "AndroidManifest.xml" | head -n 1)
           LAYOUT=$(find media/demos/main -name "sample_chooser_activity.xml" | head -n 1)
-          # The Activity usually matches the layout name
           ACTIVITY=$(find media/demos/main -name "SampleChooserActivity.java" | head -n 1)
 
-          # 2. Inject Intent Filter (System-wide Open With)
-          # Places it after the PlayerActivity declaration
+          # 1. Inject Intent Filter for "Open With"
           sed -i '/android:name="androidx.media3.demo.main.PlayerActivity"/a \
             <intent-filter>\
                 <action android:name="android.intent.action.VIEW" \/>\
@@ -60,13 +57,19 @@ jobs:
                 <data android:mimeType="*/*" \/>\
             <\/intent-filter>' "$MANIFEST"
 
-          # 3. Inject Purple Button (Fixed XML Syntax)
-          # This finds the end of the first tag (>) and puts the button on the next line
-          sed -i '0,/>/s//>\n    <Button android:id="@+id\/btn_pick_pro" android:layout_width="match_parent" android:layout_height="72dp" android:text="📂 OPEN LOCAL VIDEO (VVC\/APV\/IAMF)" android:backgroundTint="#6200EE" android:textColor="#FFFFFF" android:layout_margin="12dp" \/>/' "$LAYOUT"
+          # 2. Inject Purple Button (Safe XML Insertion)
+          # This version finds the first closing bracket '>' of the root element 
+          # and appends the button code immediately after it on a new line.
+          if [ -f "$LAYOUT" ]; then
+            # We use '0,/>/s//...\n/' to only match the first instance (the end of the root tag)
+            sed -i '0,/>/s//>\n    <Button android:id="@+id\/btn_pick_pro" android:layout_width="match_parent" android:layout_height="72dp" android:text="📂 OPEN LOCAL VIDEO (VVC\/APV\/IAMF)" android:backgroundTint="#6200EE" android:textColor="#FFFFFF" android:layout_margin="12dp" \/>/' "$LAYOUT"
+          fi
 
-          # 4. Inject Java Button Logic
-          sed -i '/import android.view.View;/a import android.widget.Button;' "$ACTIVITY"
-          sed -i '/setContentView/a \    View b = findViewById(R.id.btn_pick_pro);\n    if(b != null) b.setOnClickListener(v -> {\n        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);\n        i.addCategory(Intent.CATEGORY_OPENABLE);\n        i.setType("*/*");\n        startActivityForResult(i, 0);\n    });' "$ACTIVITY"
+          # 3. Inject Java Button Logic
+          if [ -f "$ACTIVITY" ]; then
+            sed -i '/import android.view.View;/a import android.widget.Button;' "$ACTIVITY"
+            sed -i '/setContentView/a \    View b = findViewById(R.id.btn_pick_pro);\n    if(b != null) b.setOnClickListener(v -> {\n        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);\n        i.addCategory(Intent.CATEGORY_OPENABLE);\n        i.setType("*/*");\n        startActivityForResult(i, 0);\n    });' "$ACTIVITY"
+          fi
 
       - name: Final Compilation
         run: |
@@ -77,7 +80,7 @@ jobs:
           UTIL=$(find media -name "DemoUtil.java" | head -n 1)
           sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL"
 
-          # Fix the "package attribute" warnings to clean up the build
+          # Clean up namespace package warnings
           find media -name "AndroidManifest.xml" -exec sed -i 's/package="androidx.media3[^"]*"//g' {} +
 
           cd media
