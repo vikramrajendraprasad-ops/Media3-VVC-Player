@@ -40,7 +40,7 @@ jobs:
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
           ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" "24" vvc apv iamf opus h264 hevc
 
-      - name: 🛡️ Inject UI & Intent Fix
+      - name: 🛡️ Inject UI & Universal Bridge
         run: |
           ACTIVITY=$(find media/demos/main -name "SampleChooserActivity.java" | head -n 1)
 
@@ -65,7 +65,8 @@ jobs:
             params.gravity = android.view.Gravity.TOP;\
             addContentView(proBtn, params);' "$ACTIVITY"
 
-          # 2. Inject The Corrected Bridge Logic (Fixed Intent Action)
+          # 2. Inject The Universal Bridge Logic
+          # This version uses the AS_LIST action which the demo player prefers
           python3 - <<EOF
           import os
           path = '$ACTIVITY'
@@ -73,18 +74,22 @@ jobs:
               with open(path, 'r') as f:
                   content = f.read()
               last_brace = content.rfind('}')
-              # This version explicitly uses ACTION_VIEW and grants URI permissions
+              
               bridge_logic = '''
               @Override
               public void onActivityResult(int requestCode, int resultCode, android.content.Intent data) {
                   super.onActivityResult(requestCode, resultCode, data);
                   if (requestCode == 1001 && resultCode == RESULT_OK && data != null && data.getData() != null) {
                       android.net.Uri uri = data.getData();
-                      android.content.Intent playerIntent = new android.content.Intent("android.intent.action.VIEW");
+                      // We use "androidx.media3.demo.main.action.VIEW_LIST" as the action
+                      // to trick the PlayerActivity into treating this as a valid sample
+                      android.content.Intent playerIntent = new android.content.Intent("androidx.media3.demo.main.action.VIEW_LIST");
                       playerIntent.setClass(this, androidx.media3.demo.main.PlayerActivity.class);
-                      playerIntent.setDataAndType(uri, "*/*");
+                      playerIntent.setData(uri);
                       playerIntent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                      // Force the track selector and extension decoders
                       playerIntent.putExtra("force_default_track_selector", true);
+                      playerIntent.putExtra("prefer_extension_decoders", true);
                       startActivity(playerIntent);
                   }
               }
