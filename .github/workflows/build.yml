@@ -38,10 +38,9 @@ jobs:
           chmod +x build_ffmpeg.sh
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
-          # Build with VVC, APV, and IAMF enabled in the FFmpeg bridge
           ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" "24" vvc apv iamf opus h264 hevc
 
-      - name: 🛡️ Inject UI & Force Render Bridge
+      - name: 🛡️ Inject UI & Fixed Bridge Logic
         run: |
           ACTIVITY=$(find media/demos/main -name "SampleChooserActivity.java" | head -n 1)
 
@@ -66,7 +65,7 @@ jobs:
             params.gravity = android.view.Gravity.TOP;\
             addContentView(proBtn, params);' "$ACTIVITY"
 
-          # 2. Inject The Universal Bridge Logic (Fixes Black Screen & Intent Errors)
+          # 2. Inject The Universal Bridge Logic (CLEANED JAVA VERSION)
           python3 - <<EOF
           import os
           path = '$ACTIVITY'
@@ -75,7 +74,7 @@ jobs:
                   content = f.read()
               last_brace = content.rfind('}')
               
-              # This logic builds a Media3-compatible Intent that bypasses validation errors
+              # Corrected Java syntax - no illegal '#' characters
               bridge_logic = '''
               @Override
               public void onActivityResult(int requestCode, int resultCode, android.content.Intent data) {
@@ -87,11 +86,8 @@ jobs:
                       playerIntent.setDataAndType(uri, "*/*");
                       playerIntent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
                       
-                      # Force the app to use FFmpeg extension decoders for the file
                       playerIntent.putExtra("prefer_extension_decoders", true);
                       playerIntent.putExtra("force_default_track_selector", true);
-                      
-                      # Provide metadata to prevent the player from initializing an empty screen
                       playerIntent.putExtra("uri", uri.toString());
                       playerIntent.putExtra("title", "Local Pro Content");
                       
@@ -107,15 +103,12 @@ jobs:
 
       - name: Register Codecs & Extensions
         run: |
-          # Add VVC/APV/IAMF to the supported FFmpeg bridge mime types
           LIB_FILE=$(find media -name "FfmpegLibrary.java" | head -n 1)
           sed -i '/"video\/hevc"/a \    "video\/vvc",\n    "video\/apv",\n    "audio\/iamf",' "$LIB_FILE"
           
-          # Change renderer mode to PREFER to ensure FFmpeg is tried before hardware
           UTIL=$(find media -name "DemoUtil.java" | head -n 1)
           sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL"
           
-          # Cleanup manifest package naming to avoid build conflicts
           find media -name "AndroidManifest.xml" -exec sed -i 's/package="androidx.media3[^"]*"//g' {} +
 
       - name: Final Compilation
