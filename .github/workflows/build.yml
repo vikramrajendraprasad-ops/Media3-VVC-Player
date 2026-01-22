@@ -37,20 +37,25 @@ jobs:
           cd media/libraries/decoder_ffmpeg/src/main/jni
           git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git ffmpeg
 
-      - name: Build FFmpeg (VVC + APV + IAMF)
+      - name: Build FFmpeg (Optimized for VVC/APV)
         run: |
           cd media/libraries/decoder_ffmpeg/src/main/jni
           chmod +x build_ffmpeg.sh
+          
+          # Target ARM64 and enable high-performance flags
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
-          sed -i 's/--disable-postproc//g' build_ffmpeg.sh
-          ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" linux-x86_64 24 \
-            vvc apv iamf opus h264 hevc
+          
+          # Inject NEON and ASM optimizations into the configuration
+          sed -i 's/--disable-vulkan/--disable-vulkan --enable-asm --enable-neon --enable-decoder=vvc,apv,iamf/g' build_ffmpeg.sh
+          
+          ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" linux-x86_64 24
 
       - name: Inject UI + Correct Local File Handling
         run: |
-          ACTIVITY=$(find media/demos/main -name "SampleChooserActivity.java" | head -n 1)
+          ACTIVITY_PATH=$(find media/demos/main -name "SampleChooserActivity.java" | head -n 1)
+          echo "ACTIVITY_FILE=$ACTIVITY_PATH" >> $GITHUB_ENV
 
-          # Inject button
+          # Inject the "Open Local File" button
           sed -i '/setContentView/a \
             android.widget.Button btn = new android.widget.Button(this);\
             btn.setText("📂 OPEN LOCAL FILE (VVC/APV)");\
@@ -60,74 +65,59 @@ jobs:
             btn.setOnClickListener(v -> {\
               android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);\
               intent.addCategory(android.content.Intent.CATEGORY_OPENABLE);\
-              intent.setType("video/*");\
-              intent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);\
+              intent.setType("*/*");\
+              intent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION | android.content.Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);\
               startActivityForResult(intent, 1001);\
             });\
             android.widget.FrameLayout.LayoutParams p = new android.widget.FrameLayout.LayoutParams(\
               android.view.ViewGroup.LayoutParams.MATCH_PARENT, 220);\
             p.gravity = android.view.Gravity.TOP;\
-            addContentView(btn, p);' "$ACTIVITY"
+            addContentView(btn, p);' "$ACTIVITY_PATH"
 
-          # Replace onActivityResult with correct Media3 bridge
+          # Use Python to bridge the environment variable and inject onActivityResult
           python3 <<'EOF'
           import re
-          path = "$ACTIVITY"
-          with open(path) as f:
+          import os
+
+          path = os.getenv('ACTIVITY_FILE')
+          with open(path, 'r') as f:
               src = f.read()
 
-          src = re.sub(
-              r'@Override\s+protected void onActivityResult[\s\S]*?\n\s*}\n',
-              '',
-              src
-          )
+          # Remove any existing onActivityResult to prevent compilation errors
+          src = re.sub(r'@Override\s+protected void onActivityResult[\s\S]*?\n\s*\}\n', '', src)
 
           bridge = '''
           @Override
           protected void onActivityResult(int requestCode, int resultCode, android.content.Intent data) {
             super.onActivityResult(requestCode, resultCode, data);
-
             if (requestCode == 1001 && resultCode == RESULT_OK && data != null && data.getData() != null) {
               android.net.Uri uri = data.getData();
+              try {
+                getContentResolver().takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+              } catch (Exception e) {}
 
-              final int takeFlags =
-                  data.getFlags() &
-                  (android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION |
-                   android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
-
-              getContentResolver().takePersistableUriPermission(uri, takeFlags);
-
-              android.content.Intent intent =
-                  new android.content.Intent(this, androidx.media3.demo.main.PlayerActivity.class);
-
-              intent.putExtra(
-                  androidx.media3.demo.main.PlayerActivity.EXTRA_MEDIA_URI,
-                  uri.toString()
-              );
-
-              intent.putExtra(
-                  androidx.media3.demo.main.PlayerActivity.EXTRA_EXTENSION_RENDERER_MODE,
-                  androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
-              );
-
+              android.content.Intent intent = new android.content.Intent(this, androidx.media3.demo.main.PlayerActivity.class);
+              intent.setData(uri);
+              intent.putExtra("prefer_extension_decoders", true); 
+              intent.putExtra(androidx.media3.demo.main.PlayerActivity.EXTRA_EXTENSION_RENDERER_MODE,
+                             androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER);
               startActivity(intent);
             }
           }
           '''
-
-          src = src.rstrip('}\n') + bridge + '\n}\n'
+          # Append the method before the final closing brace
+          src = src.rstrip().rstrip('}') + bridge + '\n}'
           with open(path, 'w') as f:
               f.write(src)
-          EOF
+EOF
 
-      - name: Register VVC / APV / IAMF & Prefer FFmpeg
+      - name: Register Codecs in Media3 Source
         run: |
+          # 1. Register MIME types in FfmpegLibrary
           LIB=$(find media -name "FfmpegLibrary.java" | head -n 1)
-          sed -i '/"video\/hevc"/a \
-            "video/vvc",\
-            "video/apv",\
-            "audio/iamf",' "$LIB"
+          sed -i '/"video\/hevc"/a \    "video/vvc",\n    "video/apv",\n    "audio/iamf",' "$LIB"
 
+          # 2. Force Demo to prefer extensions by default
           UTIL=$(find media -name "DemoUtil.java" | head -n 1)
           sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL"
 
@@ -135,9 +125,10 @@ jobs:
         run: |
           cd media
           chmod +x gradlew
+          # Build the main demo app
           ./gradlew :demo:assembleDebug
           mkdir -p ../output
-          find . -name "*.apk" -exec cp {} ../output/Media3_Pro_Player.apk \;
+          find . -name "*-debug.apk" -exec cp {} ../output/Media3_Pro_Player.apk \;
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
