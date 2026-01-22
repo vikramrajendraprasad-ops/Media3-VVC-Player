@@ -1,46 +1,4 @@
-name: Build Media3 Pro Player (VVC+APV+IAMF)
-on: [workflow_dispatch]
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout Media3
-        uses: actions/checkout@v4
-        with:
-          repository: androidx/media
-          path: media
-          ref: main
-
-      - name: Install 2026 Build Tools
-        run: sudo apt-get update && sudo apt-get install -y nasm yasm make
-
-      - name: Setup JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-
-      - name: Setup NDK r26b
-        id: setup-ndk
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r26b
-
-      - name: Prepare FFmpeg Source
-        run: |
-          cd media/libraries/decoder_ffmpeg/src/main/jni
-          git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git ffmpeg
-
-      - name: Build Native Core (VVC+APV+IAMF+Opus)
-        run: |
-          cd media/libraries/decoder_ffmpeg/src/main/jni
-          chmod +x build_ffmpeg.sh
-          sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
-          sed -i 's/--disable-postproc//g' build_ffmpeg.sh
-          ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" "24" vvc apv iamf opus h264 hevc
-
-      - name: 🛡️ Inject UI & Universal Bridge
+- name: 🛡️ Inject UI & Force Render Bridge
         run: |
           ACTIVITY=$(find media/demos/main -name "SampleChooserActivity.java" | head -n 1)
 
@@ -65,8 +23,7 @@ jobs:
             params.gravity = android.view.Gravity.TOP;\
             addContentView(proBtn, params);' "$ACTIVITY"
 
-          # 2. Inject The Universal Bridge Logic
-          # This version uses the AS_LIST action which the demo player prefers
+          # 2. Inject The Force Render Bridge Logic
           python3 - <<EOF
           import os
           path = '$ACTIVITY'
@@ -75,21 +32,31 @@ jobs:
                   content = f.read()
               last_brace = content.rfind('}')
               
+              # This version forces the Intent to include MediaItem data that the 
+              # PlayerActivity needs to initialize the renderers properly
               bridge_logic = '''
               @Override
               public void onActivityResult(int requestCode, int resultCode, android.content.Intent data) {
                   super.onActivityResult(requestCode, resultCode, data);
                   if (requestCode == 1001 && resultCode == RESULT_OK && data != null && data.getData() != null) {
                       android.net.Uri uri = data.getData();
-                      // We use "androidx.media3.demo.main.action.VIEW_LIST" as the action
-                      // to trick the PlayerActivity into treating this as a valid sample
-                      android.content.Intent playerIntent = new android.content.Intent("androidx.media3.demo.main.action.VIEW_LIST");
-                      playerIntent.setClass(this, androidx.media3.demo.main.PlayerActivity.class);
+                      
+                      // Create the intent for PlayerActivity
+                      android.content.Intent playerIntent = new android.content.Intent(this, androidx.media3.demo.main.PlayerActivity.class);
+                      
+                      # Set the action to VIEW to satisfy the Demo App checks
+                      playerIntent.setAction("android.intent.action.VIEW");
                       playerIntent.setData(uri);
                       playerIntent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                      // Force the track selector and extension decoders
-                      playerIntent.putExtra("force_default_track_selector", true);
+                      
+                      # CRITICAL: Force the player to use extension decoders and auto-play
                       playerIntent.putExtra("prefer_extension_decoders", true);
+                      playerIntent.putExtra("force_default_track_selector", true);
+                      
+                      # These extras simulate clicking a 'sample' from the list
+                      playerIntent.putExtra("uri", uri.toString());
+                      playerIntent.putExtra("title", "Pro Player: " + uri.getLastPathSegment());
+                      
                       startActivity(playerIntent);
                   }
               }
@@ -99,27 +66,3 @@ jobs:
                   with open(path, 'w') as f:
                       f.write(new_content)
           EOF
-
-      - name: Register Codecs & Preference
-        run: |
-          LIB_FILE=$(find media -name "FfmpegLibrary.java" | head -n 1)
-          sed -i '/"video\/hevc"/a \    "video\/vvc",\n    "video\/apv",\n    "audio\/iamf",' "$LIB_FILE"
-          
-          UTIL=$(find media -name "DemoUtil.java" | head -n 1)
-          sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL"
-          
-          find media -name "AndroidManifest.xml" -exec sed -i 's/package="androidx.media3[^"]*"//g' {} +
-
-      - name: Final Compilation
-        run: |
-          cd media
-          chmod +x gradlew
-          ./gradlew :demo:assembleDebug
-          mkdir -p ../output_apk
-          find . -name "*.apk" -not -path "*/build-cache/*" -exec cp {} ../output_apk/VVC_Pro_Player.apk \;
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Media3-Pro-Player
-          path: output_apk/VVC_Pro_Player.apk
