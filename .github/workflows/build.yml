@@ -13,7 +13,7 @@ jobs:
           ref: main
 
       - name: Install 2026 Build Tools
-        [cite_start]run: sudo apt-get update && sudo apt-get install -y nasm yasm make [cite: 1, 2]
+        run: sudo apt-get update && sudo apt-get install -y nasm yasm make
 
       - name: Setup JDK 17
         uses: actions/setup-java@v4
@@ -25,24 +25,24 @@ jobs:
         id: setup-ndk
         uses: nttld/setup-ndk@v1
         with:
-          [cite_start]ndk-version: r26b [cite: 3]
+          ndk-version: r26b # Fixed indentation here
 
       - name: Prepare FFmpeg Source
         run: |
-          cd media/libraries/decoder_ffmpeg/src/main/jni [cite: 4]
+          cd media/libraries/decoder_ffmpeg/src/main/jni
           git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git ffmpeg
 
       - name: Build Native Core (VVC+APV+IAMF+Opus)
         run: |
-          cd media/libraries/decoder_ffmpeg/src/main/jni [cite: 5]
+          cd media/libraries/decoder_ffmpeg/src/main/jni
           chmod +x build_ffmpeg.sh
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
-          ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" "24" vvc apv iamf opus h264 hevc [cite: 5]
+          ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" "24" vvc apv iamf opus h264 hevc
 
-      - name: 🛡️ Surgery on Media3 Core (Codec Marriage)
+      - name: 🛡️ Surgery on Media3 Core (Force Video Decoding)
         run: |
-          # Robust search for all necessary files [cite: 6, 18]
+          # Robust search for source files
           PLAYER=$(find media -name "PlayerActivity.java" | grep "demo/main" | head -n 1)
           CHOOSER=$(find media -name "SampleChooserActivity.java" | grep "demo/main" | head -n 1)
           FACTORY=$(find media -name "DefaultRenderersFactory.java" | head -n 1)
@@ -50,74 +50,75 @@ jobs:
           MIME_UTIL=$(find media -name "MimeTypes.java" | head -n 1)
           LIB_FILE=$(find media -name "FfmpegLibrary.java" | head -n 1)
 
-          if [ -z "$PLAYER" ] || [ -z "$MIME_UTIL" ]; then
-            echo "ERROR: Could not locate Media3 source files!"
-            exit 1
-          fi
-
-          # 1. Inject VVC and APV into the master MimeTypes list
+          # 1. Register VVC/APV MimeTypes in core engine
           sed -i '/public static final String VIDEO_H265 =/a \  public static final String VIDEO_VVC = "video/vvc";\n  public static final String VIDEO_APV = "video/apv";' "$MIME_UTIL"
           
-          # 2. Force FfmpegVideoRenderer to claim these types 
+          # 2. Tell FfmpegVideoRenderer to handle these formats
           sed -i '/VIDEO_H264/a \    case MimeTypes.VIDEO_VVC:\n    case MimeTypes.VIDEO_APV:' "$FF_VIDEO"
           
-          # 3. Register in native FfmpegLibrary 
+          # 3. Register in native library list
           sed -i '/"video\/hevc"/a \    "video\/vvc",\n    "video\/apv",\n    "audio\/iamf",' "$LIB_FILE"
 
-          # 4. Force Extension Preference (Override hardware chips) 
+          # 4. Force Preference for Extensions
           sed -i 's/extensionRendererMode = EXTENSION_RENDERER_MODE_OFF/extensionRendererMode = EXTENSION_RENDERER_MODE_PREFER/g' "$FACTORY"
 
-          # 5. Remove 'Unexpected Intent' check so your files can load [cite: 12]
-          sed -i '/unexpected_intent_action/,/return;/d' "$PLAYER"
+      - name: 🛡️ Inject UI & Fixed Action Bridge
+        run: |
+          ACTIVITY=$(find media -name "SampleChooserActivity.java" | grep "demo/main" | head -n 1)
+          
+          # Inject The Purple Button (UI)
+          sed -i '/import android.widget.Button;/d' "$ACTIVITY"
+          sed -i '/setContentView/a \
+            android.widget.Button proBtn = new android.widget.Button(this);\
+            proBtn.setText("📂 OPEN LOCAL FILE (VVC/APV)");\
+            proBtn.setBackgroundColor(0xFF6200EE);\
+            proBtn.setTextColor(0xFFFFFFFF);\
+            proBtn.setPadding(30, 30, 30, 30);\
+            proBtn.setOnClickListener(v -> {\
+                android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);\
+                intent.addCategory(android.content.Intent.CATEGORY_OPENABLE);\
+                intent.setType("*/*");\
+                startActivityForResult(intent, 1001);\
+            });\
+            android.widget.FrameLayout.LayoutParams params = new android.widget.FrameLayout.LayoutParams(-1, 200);\
+            params.gravity = android.view.Gravity.TOP;\
+            addContentView(proBtn, params);' "$ACTIVITY"
 
-          # 6. Inject UI Button & Universal Bridge via Python [cite: 9, 10, 17]
+          # Inject Bridge Logic
           python3 - <<EOF
           import os
-          path = '$CHOOSER'
+          path = '$ACTIVITY'
           if os.path.exists(path):
               with open(path, 'r') as f:
                   content = f.read()
-              # Add Button UI [cite: 7, 8]
-              content = content.replace('setContentView(R.layout.sample_chooser_activity);', 
-                  'setContentView(R.layout.sample_chooser_activity);\n'
-                  'android.widget.Button b = new android.widget.Button(this); b.setText("📂 OPEN PRO FILE (VVC/APV/IAMF)");\n'
-                  'b.setBackgroundColor(0xFF6200EE); b.setTextColor(0xFFFFFFFF);\n'
-                  'b.setOnClickListener(v -> { android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);\n'
-                  'i.addCategory(android.content.Intent.CATEGORY_OPENABLE); i.setType("*/*"); startActivityForResult(i, 1001); });\n'
-                  'addContentView(b, new android.widget.FrameLayout.LayoutParams(-1, 200));')
-              
-              # Bridge Logic: Forces the type to video/vvc to trigger the renderer [cite: 11, 13, 14, 15, 16]
               last_brace = content.rfind('}')
-              bridge = '''
+              bridge_logic = '''
               @Override
-              protected void onActivityResult(int requestCode, int resultCode, android.content.Intent data) {
+              public void onActivityResult(int requestCode, int resultCode, android.content.Intent data) {
                   super.onActivityResult(requestCode, resultCode, data);
-                  if (requestCode == 1001 && resultCode == RESULT_OK && data != null) {
+                  if (requestCode == 1001 && resultCode == RESULT_OK && data != null && data.getData() != null) {
                       android.net.Uri uri = data.getData();
-                      android.content.Intent pi = new android.content.Intent("androidx.media3.demo.main.action.VIEW");
-                      pi.setClass(this, androidx.media3.demo.main.PlayerActivity.class);
-                      pi.setDataAndType(uri, "video/vvc"); 
-                      pi.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                      pi.putExtra("prefer_extension_decoders", true);
-                      startActivity(pi);
+                      android.content.Intent playerIntent = new android.content.Intent("androidx.media3.demo.main.action.VIEW");
+                      playerIntent.setClass(this, androidx.media3.demo.main.PlayerActivity.class);
+                      playerIntent.setDataAndType(uri, "video/vvc"); # Force video type
+                      playerIntent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                      playerIntent.putExtra("prefer_extension_decoders", true);
+                      playerIntent.putExtra("uri", uri.toString());
+                      playerIntent.putExtra("title", "Local VVC File");
+                      startActivity(playerIntent);
                   }
               }
               '''
+              new_content = content[:last_brace] + bridge_logic + content[last_brace:]
               with open(path, 'w') as f:
-                  f.write(content[:last_brace] + bridge + content[last_brace:])
+                  f.write(new_content)
           EOF
 
-      - name: Final Build
+      - name: Final Compilation
         run: |
-          find media -name "AndroidManifest.xml" -exec sed -i 's/package="androidx.media3[^"]*"//g' {} + [cite: 19]
           cd media
           chmod +x gradlew
+          find . -name "AndroidManifest.xml" -exec sed -i 's/package="androidx.media3[^"]*"//g' {} +
           ./gradlew :demo:assembleDebug
           mkdir -p ../output_apk
-          find . -name "*.apk" -not -path "*/build-cache/*" -exec cp {} ../output_apk/VVC_Pro_Player.apk \;
-
-      - [cite_start]name: Upload Artifact [cite: 20]
-        uses: actions/upload-artifact@v4
-        with:
-          name: Media3-Pro-Player
-          path: output_apk/VVC_Pro_Player.apk
+          find . -name "*.apk" -not -path "*/build-cache/*" -exec cp {} ../output_apk/V
