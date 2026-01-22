@@ -40,7 +40,7 @@ jobs:
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
           ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" "24" vvc apv iamf opus h264 hevc
 
-      - name: 🛡️ Inject UI & Fixed Bridge Logic
+      - name: 🛡️ Inject UI & Fixed Action Bridge
         run: |
           ACTIVITY=$(find media/demos/main -name "SampleChooserActivity.java" | head -n 1)
 
@@ -74,22 +74,28 @@ jobs:
                   content = f.read()
               last_brace = content.rfind('}')
               
-              # Corrected Java syntax - no illegal '#' characters
               bridge_logic = '''
               @Override
               public void onActivityResult(int requestCode, int resultCode, android.content.Intent data) {
                   super.onActivityResult(requestCode, resultCode, data);
                   if (requestCode == 1001 && resultCode == RESULT_OK && data != null && data.getData() != null) {
                       android.net.Uri uri = data.getData();
-                      android.content.Intent playerIntent = new android.content.Intent("android.intent.action.VIEW");
+                      
+                      // Using the EXACT internal action string the Demo App expects
+                      android.content.Intent playerIntent = new android.content.Intent("androidx.media3.demo.main.action.VIEW");
                       playerIntent.setClass(this, androidx.media3.demo.main.PlayerActivity.class);
+                      
+                      // Essential for file picker URIs
                       playerIntent.setDataAndType(uri, "*/*");
                       playerIntent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
                       
+                      // Force the decoder preference
                       playerIntent.putExtra("prefer_extension_decoders", true);
                       playerIntent.putExtra("force_default_track_selector", true);
+                      
+                      // Set mandatory title/URI extras to avoid "null" errors
                       playerIntent.putExtra("uri", uri.toString());
-                      playerIntent.putExtra("title", "Local Pro Content");
+                      playerIntent.putExtra("title", "Local VVC File");
                       
                       startActivity(playerIntent);
                   }
