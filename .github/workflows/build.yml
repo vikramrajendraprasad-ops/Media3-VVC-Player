@@ -51,7 +51,7 @@ jobs:
           PLAYER=$(find media -name "PlayerActivity.java" | head -n 1)
           CHOOSER=$(find media -name "SampleChooserActivity.java" | head -n 1)
 
-          # 2. SAFE MIME REGISTRATION (Checks first to prevent "already defined" errors)
+          # 2. SAFE MIME REGISTRATION (Prevents re-definition errors)
           grep -q "VIDEO_VVC" "$MIME_UTIL" || sed -i '/public static final String VIDEO_H265 =/a \  public static final String VIDEO_VVC = "video/vvc";' "$MIME_UTIL"
           grep -q "VIDEO_APV" "$MIME_UTIL" || sed -i '/public static final String VIDEO_VVC =/a \  public static final String VIDEO_APV = "video/apv";' "$MIME_UTIL"
           grep -q "AUDIO_IAMF" "$MIME_UTIL" || sed -i '/public static final String AUDIO_OPUS =/a \  public static final String AUDIO_IAMF = "audio/iamf";' "$MIME_UTIL"
@@ -63,14 +63,14 @@ jobs:
           grep -q "audio/iamf" "$LIB_FILE" || sed -i '/"audio\/opus"/a \    "audio\/iamf",' "$LIB_FILE"
           grep -q "video/vvc" "$LIB_FILE" || sed -i '/"video\/hevc"/a \    "video\/vvc",\n    "video\/apv",' "$LIB_FILE"
 
-          # 5. THE FIX: Modify the variable value instead of re-defining it
-          # This changes the default extension mode from OFF to PREFER
+          # 5. THE CRITICAL FIX: Change value instead of re-defining constant
+          # This replaces the usage of OFF with PREFER globally in the factory
           sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$FACTORY"
 
           # 6. Bypass Security/Intent Checks
           sed -i '/unexpected_intent_action/,/return;/d' "$PLAYER"
 
-      - name: 🛡️ Inject UI & Logic
+      - name: 🛡️ Inject UI & Universal Bridge
         run: |
           ACTIVITY=$(find media -name "SampleChooserActivity.java" | head -n 1)
           
@@ -89,7 +89,7 @@ jobs:
             });\
             addContentView(proBtn, new android.widget.FrameLayout.LayoutParams(-1, 200));' "$ACTIVITY"
 
-          # Inject Bridge Logic
+          # Inject Bridge (Forcing VVC type to wake up FFmpeg)
           python3 - <<EOF
           import os
           path = '$ACTIVITY'
