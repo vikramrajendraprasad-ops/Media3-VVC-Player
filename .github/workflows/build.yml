@@ -38,12 +38,12 @@ jobs:
           chmod +x build_ffmpeg.sh
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
-          # Build with VVC, APV, and IAMF enabled
+          # Enable the Pro Codecs
           ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" "24" vvc apv iamf opus h264 hevc
 
-      - name: 🛡️ Media3 Core Surgery (Auto-Creation of Renderers)
+      - name: 🛡️ Media3 Core Surgery (Duplicate-Safe)
         run: |
-          # 1. FIND EXISTING CORE FILES
+          # Find paths regardless of branch structure
           MIME_UTIL=$(find media -name "MimeTypes.java" | head -n 1)
           FF_AUDIO=$(find media -name "FfmpegAudioRenderer.java" | head -n 1)
           LIB_FILE=$(find media -name "FfmpegLibrary.java" | head -n 1)
@@ -51,49 +51,46 @@ jobs:
           PLAYER=$(find media -name "PlayerActivity.java" | head -n 1)
           CHOOSER=$(find media -name "SampleChooserActivity.java" | head -n 1)
 
-          # 2. REGISTER MIME TYPES
-          sed -i '/public static final String VIDEO_H265 =/a \  public static final String VIDEO_VVC = "video/vvc";\n  public static final String VIDEO_APV = "video/apv";' "$MIME_UTIL"
-          sed -i '/public static final String AUDIO_OPUS =/a \  public static final String AUDIO_IAMF = "audio/iamf";' "$MIME_UTIL"
+          # 1. Safe MimeType Injection (Only adds if missing)
+          grep -q "VIDEO_VVC" "$MIME_UTIL" || sed -i '/public static final String VIDEO_H265 =/a \  public static final String VIDEO_VVC = "video/vvc";' "$MIME_UTIL"
+          grep -q "VIDEO_APV" "$MIME_UTIL" || sed -i '/public static final String VIDEO_VVC =/a \  public static final String VIDEO_APV = "video/apv";' "$MIME_UTIL"
+          grep -q "AUDIO_IAMF" "$MIME_UTIL" || sed -i '/public static final String AUDIO_OPUS =/a \  public static final String AUDIO_IAMF = "audio/iamf";' "$MIME_UTIL"
 
-          # 3. FIX THE RENDERER ISSUE (Hooking IAMF into Audio)
-          # Since FfmpegVideoRenderer doesn't exist, we ensure IAMF is handled by Audio
-          sed -i '/case MimeTypes.AUDIO_OPUS:/a \      case MimeTypes.AUDIO_IAMF:' "$FF_AUDIO"
+          # 2. Map Codecs to Renderer
+          grep -q "AUDIO_IAMF" "$FF_AUDIO" || sed -i '/case MimeTypes.AUDIO_OPUS:/a \      case MimeTypes.AUDIO_IAMF:' "$FF_AUDIO"
 
-          # 4. REGISTER IN LIBRARY
-          sed -i '/"audio\/opus"/a \    "audio\/iamf",' "$LIB_FILE"
-          sed -i '/"video\/hevc"/a \    "video\/vvc",\n    "video\/apv",' "$LIB_FILE"
+          # 3. Register in Native Library Bridge
+          grep -q "audio/iamf" "$LIB_FILE" || sed -i '/"audio\/opus"/a \    "audio\/iamf",' "$LIB_FILE"
+          grep -q "video/vvc" "$LIB_FILE" || sed -i '/"video\/hevc"/a \    "video\/vvc",\n    "video\/apv",' "$LIB_FILE"
 
-          # 5. FORCE EXTENSION MODE (PREFER)
-          # This forces ExoPlayer to use our FFmpeg build instead of system decoders
+          # 4. Force Extension Preference & Bypass Checks
           sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$FACTORY" || true
           sed -i 's/extensionRendererMode = EXTENSION_RENDERER_MODE_OFF/extensionRendererMode = EXTENSION_RENDERER_MODE_PREFER/g' "$FACTORY" || true
-
-          # 6. BYPASS SECURITY CHECKS
           sed -i '/unexpected_intent_action/,/return;/d' "$PLAYER"
 
-      - name: 🛡️ Inject UI & Universal Pick-to-Play
+      - name: 🛡️ Inject UI & Universal Bridge
         run: |
-          CHOOSER=$(find media -name "SampleChooserActivity.java" | head -n 1)
+          ACTIVITY=$(find media -name "SampleChooserActivity.java" | head -n 1)
           
-          # Inject Button
-          sed -i '/import android.widget.Button;/d' "$CHOOSER"
+          # Inject UI Button
+          sed -i '/import android.widget.Button;/d' "$ACTIVITY"
           sed -i '/setContentView/a \
-            android.widget.Button proBtn = new android.widget.Button(this);\
-            proBtn.setText("📂 OPEN PRO FILE (VVC/APV/IAMF)");\
-            proBtn.setBackgroundColor(0xFF6200EE);\
-            proBtn.setTextColor(0xFFFFFFFF);\
-            proBtn.setOnClickListener(v -> {\
-                android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);\
-                intent.addCategory(android.content.Intent.CATEGORY_OPENABLE);\
-                intent.setType("*/*");\
-                startActivityForResult(intent, 1001);\
+            android.widget.Button b = new android.widget.Button(this);\
+            b.setText("📂 OPEN PRO FILE (VVC/APV/IAMF)");\
+            b.setBackgroundColor(0xFF6200EE);\
+            b.setTextColor(0xFFFFFFFF);\
+            b.setOnClickListener(v -> {\
+                android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);\
+                i.addCategory(android.content.Intent.CATEGORY_OPENABLE);\
+                i.setType("*/*");\
+                startActivityForResult(i, 1001);\
             });\
-            addContentView(proBtn, new android.widget.FrameLayout.LayoutParams(-1, 200));' "$CHOOSER"
+            addContentView(b, new android.widget.FrameLayout.LayoutParams(-1, 200));' "$ACTIVITY"
 
-          # Inject Bridge (FORCING VVC TYPE)
+          # Inject Bridge (Universal Force-Type)
           python3 - <<EOF
           import os
-          path = '$CHOOSER'
+          path = '$ACTIVITY'
           with open(path, 'r') as f: content = f.read()
           bridge = '''
               @Override
@@ -103,11 +100,11 @@ jobs:
                       android.net.Uri uri = data.getData();
                       android.content.Intent pi = new android.content.Intent("androidx.media3.demo.main.action.VIEW");
                       pi.setClass(this, androidx.media3.demo.main.PlayerActivity.class);
-                      pi.setDataAndType(uri, "video/vvc"); // This triggers the VVC/FFmpeg path
+                      pi.setDataAndType(uri, "video/vvc"); 
                       pi.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
                       pi.putExtra("prefer_extension_decoders", true);
                       pi.putExtra("uri", uri.toString());
-                      pi.putExtra("title", "Pro Media");
+                      pi.putExtra("title", "Pro Media File");
                       startActivity(pi);
                   }
               }
@@ -127,5 +124,5 @@ jobs:
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Pro-Player
+          name: Media3-Pro-Player
           path: output_apk/VVC_APV_IAMF_Player.apk
