@@ -38,13 +38,12 @@ jobs:
           chmod +x build_ffmpeg.sh
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
-          # Enable VVC, APV, IAMF, and Opus
+          # Explicitly enabling vvc, apv, and iamf in the native build
           ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" "24" vvc apv iamf opus h264 hevc
 
-      - name: 🛡️ Media3 Core Surgery (Broad Search)
+      - name: 🛡️ Media3 Core Surgery (Broad Search & Codec Mapping)
         run: |
           # 1. BROAD SEARCH: Find files anywhere in the 'media' folder
-          # We use 'head -n 1' to grab the first match, which is safe for these unique files
           PLAYER=$(find media -name "PlayerActivity.java" | head -n 1)
           CHOOSER=$(find media -name "SampleChooserActivity.java" | head -n 1)
           FACTORY=$(find media -name "DefaultRenderersFactory.java" | head -n 1)
@@ -53,15 +52,8 @@ jobs:
           MIME_UTIL=$(find media -name "MimeTypes.java" | head -n 1)
           LIB_FILE=$(find media -name "FfmpegLibrary.java" | head -n 1)
 
-          # Debug: Print found paths to the log so we can see them
-          echo "FOUND PLAYER: $PLAYER"
-          echo "FOUND VIDEO RENDERER: $FF_VIDEO"
-          echo "FOUND MIME UTILS: $MIME_UTIL"
-
-          # Safety Check
           if [ -z "$FF_VIDEO" ] || [ -z "$MIME_UTIL" ] || [ -z "$PLAYER" ]; then
-             echo "ERROR: Files still not found. Listing all java files for debug:"
-             find media -name "*.java" | head -n 20
+             echo "ERROR: Critical source files not found."
              exit 1
           fi
 
@@ -69,7 +61,7 @@ jobs:
           sed -i '/public static final String VIDEO_H265 =/a \  public static final String VIDEO_VVC = "video/vvc";\n  public static final String VIDEO_APV = "video/apv";' "$MIME_UTIL"
           sed -i '/public static final String AUDIO_OPUS =/a \  public static final String AUDIO_IAMF = "audio/iamf";' "$MIME_UTIL"
 
-          # 3. Map Codecs to Renderers
+          # 3. Map Codecs to Renderers (Ensures video track is playable)
           sed -i '/case MimeTypes.VIDEO_H264:/a \      case MimeTypes.VIDEO_VVC:\n      case MimeTypes.VIDEO_APV:' "$FF_VIDEO"
           sed -i '/case MimeTypes.AUDIO_OPUS:/a \      case MimeTypes.AUDIO_IAMF:' "$FF_AUDIO"
 
@@ -77,10 +69,8 @@ jobs:
           sed -i '/"video\/hevc"/a \    "video\/vvc",\n    "video\/apv",\n    "audio\/iamf",' "$LIB_FILE"
 
           # 5. Force Extension Preference
-          sed -i 's/extensionRendererMode = EXTENSION_RENDERER_MODE_OFF/extensionRendererMode = EXTENSION_RENDERER_MODE_PREFER/g' "$FACTORY"
-
-          # 6. Kill Intent Checks
-          sed -i '/unexpected_intent_action/,/return;/d' "$PLAYER"
+          UTIL=$(find media -name "DemoUtil.java" | head -n 1)
+          sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL"
 
       - name: 🛡️ Inject UI & Bridge
         run: |
@@ -121,10 +111,8 @@ jobs:
                       android.content.Intent playerIntent = new android.content.Intent("androidx.media3.demo.main.action.VIEW");
                       playerIntent.setClass(this, androidx.media3.demo.main.PlayerActivity.class);
                       
-                      // VVC MODE: Un-comment the line below to test VVC/APV Video
+                      # Force type to trigger decoder selection
                       playerIntent.setDataAndType(uri, "video/vvc"); 
-                      
-                      // IAMF MODE: If testing ONLY Audio, change "video/vvc" above to "audio/iamf"
                       
                       playerIntent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
                       playerIntent.putExtra("prefer_extension_decoders", true);
@@ -144,7 +132,6 @@ jobs:
         run: |
           cd media
           chmod +x gradlew
-          find . -name "AndroidManifest.xml" -exec sed -i 's/package="androidx.media3[^"]*"//g' {} +
           ./gradlew :demo:assembleDebug
           mkdir -p ../output_apk
           find . -name "*.apk" -not -path "*/build-cache/*" -exec cp {} ../output_apk/VVC_Pro_Player.apk \;
