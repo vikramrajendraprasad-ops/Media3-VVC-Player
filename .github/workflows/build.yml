@@ -38,12 +38,12 @@ jobs:
           chmod +x build_ffmpeg.sh
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
-          # Enable the Pro Codecs
+          # Build with VVC, APV, and IAMF enabled
           ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" "24" vvc apv iamf opus h264 hevc
 
-      - name: 🛡️ Media3 Core Surgery (Duplicate-Safe)
+      - name: 🛡️ Media3 Core Surgery (Safe Modification)
         run: |
-          # Find paths regardless of branch structure
+          # 1. FIND PATHS
           MIME_UTIL=$(find media -name "MimeTypes.java" | head -n 1)
           FF_AUDIO=$(find media -name "FfmpegAudioRenderer.java" | head -n 1)
           LIB_FILE=$(find media -name "FfmpegLibrary.java" | head -n 1)
@@ -51,21 +51,24 @@ jobs:
           PLAYER=$(find media -name "PlayerActivity.java" | head -n 1)
           CHOOSER=$(find media -name "SampleChooserActivity.java" | head -n 1)
 
-          # 1. Safe MimeType Injection (Only adds if missing)
+          # 2. REGISTER MIME TYPES (Only add if they don't exist)
           grep -q "VIDEO_VVC" "$MIME_UTIL" || sed -i '/public static final String VIDEO_H265 =/a \  public static final String VIDEO_VVC = "video/vvc";' "$MIME_UTIL"
           grep -q "VIDEO_APV" "$MIME_UTIL" || sed -i '/public static final String VIDEO_VVC =/a \  public static final String VIDEO_APV = "video/apv";' "$MIME_UTIL"
           grep -q "AUDIO_IAMF" "$MIME_UTIL" || sed -i '/public static final String AUDIO_OPUS =/a \  public static final String AUDIO_IAMF = "audio/iamf";' "$MIME_UTIL"
 
-          # 2. Map Codecs to Renderer
+          # 3. MAP AUDIO CODECS
           grep -q "AUDIO_IAMF" "$FF_AUDIO" || sed -i '/case MimeTypes.AUDIO_OPUS:/a \      case MimeTypes.AUDIO_IAMF:' "$FF_AUDIO"
 
-          # 3. Register in Native Library Bridge
+          # 4. REGISTER IN NATIVE BRIDGE
           grep -q "audio/iamf" "$LIB_FILE" || sed -i '/"audio\/opus"/a \    "audio\/iamf",' "$LIB_FILE"
           grep -q "video/vvc" "$LIB_FILE" || sed -i '/"video\/hevc"/a \    "video\/vvc",\n    "video\/apv",' "$LIB_FILE"
 
-          # 4. Force Extension Preference & Bypass Checks
-          sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$FACTORY" || true
-          sed -i 's/extensionRendererMode = EXTENSION_RENDERER_MODE_OFF/extensionRendererMode = EXTENSION_RENDERER_MODE_PREFER/g' "$FACTORY" || true
+          # 5. FIX THE "ALREADY DEFINED" ERROR & FORCE EXTENSIONS
+          # Instead of defining a new variable, we modify the default value assigned in the constructor or declaration
+          # This forces "PREFER" mode without duplicating the constant definition
+          sed -i 's/extensionRendererMode = EXTENSION_RENDERER_MODE_OFF/extensionRendererMode = EXTENSION_RENDERER_MODE_PREFER/g' "$FACTORY"
+
+          # 6. BYPASS SECURITY CHECKS
           sed -i '/unexpected_intent_action/,/return;/d' "$PLAYER"
 
       - name: 🛡️ Inject UI & Universal Bridge
@@ -87,7 +90,7 @@ jobs:
             });\
             addContentView(b, new android.widget.FrameLayout.LayoutParams(-1, 200));' "$ACTIVITY"
 
-          # Inject Bridge (Universal Force-Type)
+          # Inject Bridge (FORCING TYPE)
           python3 - <<EOF
           import os
           path = '$ACTIVITY'
