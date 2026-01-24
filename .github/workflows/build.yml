@@ -38,49 +38,68 @@ jobs:
           chmod +x build_ffmpeg.sh
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
-          # Explicitly enabling vvc, apv, and iamf in the native build
+          # Building with VVC, APV, and IAMF enabled
           ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" "24" vvc apv iamf opus h264 hevc
 
-      - name: 🛡️ Media3 Core Surgery (Broad Search & Codec Mapping)
+      - name: 🛡️ Media3 Core Surgery (Precise Path Mapping)
         run: |
-          # 1. BROAD SEARCH: Find files anywhere in the 'media' folder
-          PLAYER=$(find media -name "PlayerActivity.java" | head -n 1)
-          CHOOSER=$(find media -name "SampleChooserActivity.java" | head -n 1)
-          FACTORY=$(find media -name "DefaultRenderersFactory.java" | head -n 1)
-          FF_VIDEO=$(find media -name "FfmpegVideoRenderer.java" | head -n 1)
-          FF_AUDIO=$(find media -name "FfmpegAudioRenderer.java" | head -n 1)
-          MIME_UTIL=$(find media -name "MimeTypes.java" | head -n 1)
-          LIB_FILE=$(find media -name "FfmpegLibrary.java" | head -n 1)
+          # 1. DEFINE PRECIOUS PATHS (Based on Media3 repo structure)
+          MIME_UTIL="media/libraries/common/src/main/java/androidx/media3/common/MimeTypes.java"
+          FF_VIDEO="media/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/FfmpegVideoRenderer.java"
+          FF_AUDIO="media/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/FfmpegAudioRenderer.java"
+          LIB_FILE="media/libraries/decoder_ffmpeg/src/main/java/androidx/media3/decoder/ffmpeg/FfmpegLibrary.java"
+          FACTORY="media/libraries/exoplayer/src/main/java/androidx/media3/exoplayer/DefaultRenderersFactory.java"
+          PLAYER="media/demos/main/src/main/java/androidx/media3/demo/main/PlayerActivity.java"
+          CHOOSER="media/demos/main/src/main/java/androidx/media3/demo/main/SampleChooserActivity.java"
 
-          if [ -z "$FF_VIDEO" ] || [ -z "$MIME_UTIL" ] || [ -z "$PLAYER" ]; then
-             echo "ERROR: Critical source files not found."
-             exit 1
-          fi
+          # 2. VERIFY FILES EXIST
+          for file in "$MIME_UTIL" "$FF_VIDEO" "$FF_AUDIO" "$LIB_FILE" "$FACTORY" "$PLAYER" "$CHOOSER"; do
+            if [ ! -f "$file" ]; then
+              echo "MISSING: $file. Attempting broad search..."
+              FOUND=$(find media -name "$(basename "$file")" | head -n 1)
+              if [ -n "$FOUND" ]; then
+                echo "FOUND AT: $FOUND"
+                # Update the variable to the found path
+                case "$(basename "$file")" in
+                  MimeTypes.java) MIME_UTIL="$FOUND" ;;
+                  FfmpegVideoRenderer.java) FF_VIDEO="$FOUND" ;;
+                  FfmpegAudioRenderer.java) FF_AUDIO="$FOUND" ;;
+                  FfmpegLibrary.java) LIB_FILE="$FOUND" ;;
+                  DefaultRenderersFactory.java) FACTORY="$FOUND" ;;
+                  PlayerActivity.java) PLAYER="$FOUND" ;;
+                  SampleChooserActivity.java) CHOOSER="$FOUND" ;;
+                esac
+              else
+                echo "FATAL: Could not find $(basename "$file") anywhere."
+                exit 1
+              fi
+            fi
+          done
 
-          # 2. Register VVC/APV/IAMF MimeTypes
+          # 3. APPLY CODEC HANDSHAKE
+          # Add MimeTypes
           sed -i '/public static final String VIDEO_H265 =/a \  public static final String VIDEO_VVC = "video/vvc";\n  public static final String VIDEO_APV = "video/apv";' "$MIME_UTIL"
           sed -i '/public static final String AUDIO_OPUS =/a \  public static final String AUDIO_IAMF = "audio/iamf";' "$MIME_UTIL"
 
-          # 3. Map Codecs to Renderers (Ensures video track is playable)
+          # Map to Renderers
           sed -i '/case MimeTypes.VIDEO_H264:/a \      case MimeTypes.VIDEO_VVC:\n      case MimeTypes.VIDEO_APV:' "$FF_VIDEO"
           sed -i '/case MimeTypes.AUDIO_OPUS:/a \      case MimeTypes.AUDIO_IAMF:' "$FF_AUDIO"
 
-          # 4. Register in Native Library
+          # Register in Library and force Extension use
           sed -i '/"video\/hevc"/a \    "video\/vvc",\n    "video\/apv",\n    "audio\/iamf",' "$LIB_FILE"
+          sed -i 's/extensionRendererMode = EXTENSION_RENDERER_MODE_OFF/extensionRendererMode = EXTENSION_RENDERER_MODE_PREFER/g' "$FACTORY"
 
-          # 5. Force Extension Preference
-          UTIL=$(find media -name "DemoUtil.java" | head -n 1)
-          sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL"
+          # Remove strict intent checks
+          sed -i '/unexpected_intent_action/,/return;/d' "$PLAYER"
 
-      - name: 🛡️ Inject UI & Bridge
+      - name: 🛡️ Inject UI & Logic
         run: |
           CHOOSER=$(find media -name "SampleChooserActivity.java" | head -n 1)
-          
-          # Inject UI Button
+          # Inject UI and Bridge (Logic same as previous version, but with VVC focus)
           sed -i '/import android.widget.Button;/d' "$CHOOSER"
           sed -i '/setContentView/a \
             android.widget.Button proBtn = new android.widget.Button(this);\
-            proBtn.setText("📂 OPEN PRO FILE (VVC/APV/IAMF)");\
+            proBtn.setText("📂 OPEN VVC/APV/IAMF FILE");\
             proBtn.setBackgroundColor(0xFF6200EE);\
             proBtn.setTextColor(0xFFFFFFFF);\
             proBtn.setPadding(30, 30, 30, 30);\
@@ -94,38 +113,29 @@ jobs:
             params.gravity = android.view.Gravity.TOP;\
             addContentView(proBtn, params);' "$CHOOSER"
 
-          # Inject Universal Bridge
           python3 - <<EOF
           import os
           path = '$CHOOSER'
-          if os.path.exists(path):
-              with open(path, 'r') as f:
-                  content = f.read()
-              last_brace = content.rfind('}')
-              bridge_logic = '''
+          with open(path, 'r') as f: content = f.read()
+          bridge = '''
               @Override
               public void onActivityResult(int requestCode, int resultCode, android.content.Intent data) {
                   super.onActivityResult(requestCode, resultCode, data);
-                  if (requestCode == 1001 && resultCode == RESULT_OK && data != null && data.getData() != null) {
+                  if (requestCode == 1001 && resultCode == RESULT_OK && data != null) {
                       android.net.Uri uri = data.getData();
                       android.content.Intent playerIntent = new android.content.Intent("androidx.media3.demo.main.action.VIEW");
                       playerIntent.setClass(this, androidx.media3.demo.main.PlayerActivity.class);
-                      
-                      # Force type to trigger decoder selection
                       playerIntent.setDataAndType(uri, "video/vvc"); 
-                      
                       playerIntent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
                       playerIntent.putExtra("prefer_extension_decoders", true);
                       playerIntent.putExtra("uri", uri.toString());
-                      playerIntent.putExtra("title", "Pro Media File");
+                      playerIntent.putExtra("title", "Pro Media");
                       startActivity(playerIntent);
                   }
               }
-              '''
-              if last_brace != -1:
-                  new_content = content[:last_brace] + bridge_logic + content[last_brace:]
-                  with open(path, 'w') as f:
-                      f.write(new_content)
+          '''
+          new_content = content[:content.rfind('}')] + bridge + "}"
+          with open(path, 'w') as f: f.write(new_content)
           EOF
 
       - name: Final Compilation
