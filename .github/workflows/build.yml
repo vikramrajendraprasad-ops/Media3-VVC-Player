@@ -12,7 +12,6 @@ jobs:
           path: media
           ref: main
 
-      # ✅ FIXED: Combined into a single line to prevent "Line 14" syntax error
       - name: Install Build Tools
         run: sudo apt-get update && sudo apt-get install -y nasm yasm make git python3
 
@@ -34,79 +33,68 @@ jobs:
           git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git ffmpeg
           chmod +x build_ffmpeg.sh
           
-          # Force arm64 target to save time
+          # 1. Force arm64 target (Critical for build speed & modern devices)
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
           
-          # Remove obsolete flag that breaks newer FFmpeg builds
+          # 2. Fix compatibility with latest FFmpeg (Removes obsolete flag)
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
 
-          # ✅ CORRECTED: Removed "24" so "vvc" is correctly detected as a decoder
-          ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" vvc apv iamf opus h264 hevc
+          # 3. THE FIX: Added "21" (API Level) before "vvc".
+          # Format: [Module] [NDK] [Host] [API] [Decoders...]
+          ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" 21 vvc apv iamf opus h264 hevc
 
-      - name: 🛡️ Inject Logic (Java & Codec Mapping)
+      - name: 🛡️ Inject Logic (Fixes Black Screen & UI)
         shell: python
         run: |
           import os
 
-          # Helper to read/write files
-          def patch_content(path, simple_replace_pairs=None, injection_func=None):
+          def patch_content(path, injection_func):
               if not os.path.exists(path):
                   print(f"Skipping {path} (Not found)")
                   return
-              
               with open(path, 'r') as f:
                   content = f.read()
-              
-              modified = False
-              
-              if simple_replace_pairs:
-                  for search, replace in simple_replace_pairs:
-                      if search in content:
-                          content = content.replace(search, replace)
-                          modified = True
-              
-              if injection_func:
-                  new_content = injection_func(content)
-                  if new_content != content:
-                      content = new_content
-                      modified = True
-
-              if modified:
+              new_content = injection_func(content)
+              if new_content != content:
                   with open(path, 'w') as f:
-                      f.write(content)
+                      f.write(new_content)
                   print(f"Patched: {path}")
 
-          # --- 1. PATCH FfmpegLibrary.java (Fixes Black Screen) ---
+          # --- 1. PATCH FfmpegLibrary.java (CRITICAL FOR VIDEO) ---
+          # This maps the "video/vvc" MIME type to the "vvc" decoder name.
+          # Without this, you get audio but a black screen.
           lib_file = os.popen('find media -name "FfmpegLibrary.java"').read().strip()
           
           def inject_codec_map(content):
-              # Add MIME types
+              # Add MIME types if missing
               if '"video/hevc"' in content and '"video/vvc"' not in content:
                   content = content.replace('"video/hevc"', '"video/hevc", "video/vvc", "video/apv", "audio/iamf"')
               
-              # Add Codec Name Mapping (The Critical Fix for VVC)
+              # Add the switch case for VVC
               if 'return "hevc";' in content and 'case "video/vvc":' not in content:
                   replacement = 'return "hevc";\n      case "video/vvc": return "vvc";\n      case "video/apv": return "apv";'
                   content = content.replace('return "hevc";', replacement)
               return content
 
-          patch_content(lib_file, injection_func=inject_codec_map)
+          patch_content(lib_file, inject_codec_map)
 
-          # --- 2. PATCH DemoUtil.java (Enable Extension) ---
+          # --- 2. PATCH DemoUtil.java (Force Extensions) ---
           util_file = os.popen('find media -name "DemoUtil.java"').read().strip()
-          patch_content(util_file, [("EXTENSION_RENDERER_MODE_OFF", "EXTENSION_RENDERER_MODE_PREFER")])
+          def enable_extensions(content):
+              return content.replace("EXTENSION_RENDERER_MODE_OFF", "EXTENSION_RENDERER_MODE_PREFER")
+          patch_content(util_file, enable_extensions)
 
-          # --- 3. PATCH SampleChooserActivity.java (UI & Intent) ---
+          # --- 3. PATCH SampleChooserActivity.java (Purple Button) ---
           act_file = os.popen('find media -name "SampleChooserActivity.java" | head -n 1').read().strip()
           
-          def inject_activity_logic(content):
-              # Inject Button
-              btn_code = 'android.widget.Button b = new android.widget.Button(this); b.setText("📂 OPEN VVC/APV"); b.setBackgroundColor(0xFF6200EE); b.setTextColor(0xFFFFFFFF); b.setOnClickListener(v -> { android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT); i.setType("*/*"); startActivityForResult(i, 1001); }); addContentView(b, new android.view.ViewGroup.LayoutParams(-1, 200));'
+          def inject_ui(content):
+              # Button Code
+              btn = 'android.widget.Button b = new android.widget.Button(this); b.setText("📂 OPEN VVC/APV"); b.setBackgroundColor(0xFF6200EE); b.setTextColor(0xFFFFFFFF); b.setOnClickListener(v -> { android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT); i.setType("*/*"); startActivityForResult(i, 1001); }); addContentView(b, new android.view.ViewGroup.LayoutParams(-1, 200));'
               
               if 'setContentView(view);' in content and 'OPEN VVC' not in content:
-                  content = content.replace('setContentView(view);', f'setContentView(view); {btn_code}')
+                  content = content.replace('setContentView(view);', f'setContentView(view); {btn}')
 
-              # Inject Bridge Logic
+              # Intent Bridge
               bridge = """
               @Override
               public void onActivityResult(int req, int res, android.content.Intent data) {
@@ -128,7 +116,7 @@ jobs:
                       content = content[:last_brace] + bridge + "}"
               return content
 
-          patch_content(act_file, injection_func=inject_activity_logic)
+          patch_content(act_file, inject_ui)
 
       - name: Final Compilation
         run: |
