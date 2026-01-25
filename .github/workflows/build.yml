@@ -36,38 +36,41 @@ jobs:
         run: |
           cd media/libraries/decoder_ffmpeg/src/main/jni
           chmod +x build_ffmpeg.sh
+          # Force ARM64 and Disable Post-Processing
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
-          # Enable the targeted formats in the native build process 
+          # Build with VVC, APV, IAMF, and Opus enabled 
           ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" "24" vvc apv iamf opus h264 hevc
 
-      - name: 🛡️ Surgery: Fix Core Files
+      - name: 🛡️ Surgery: Register Codecs & Fix Core
         run: |
+          # 1. Locate Critical Files
           LIB_FILE=$(find media -name "FfmpegLibrary.java" | head -n 1)
           FACTORY=$(find media -name "DefaultRenderersFactory.java" | head -n 1)
           UTIL=$(find media -name "DemoUtil.java" | head -n 1)
 
-          # Safely register native codecs in the JNI bridge 
+          # 2. Register Codecs in Native Bridge
+          # We check if they are missing first to avoid duplicates
           grep -q "video/vvc" "$LIB_FILE" || sed -i '/"video\/hevc"/a \    "video\/vvc",\n    "video\/apv",' "$LIB_FILE"
-          grep -q "audio/iamf" "$LIB_FILE" || sed -i '/"video\/hevc"/a \    "audio\/iamf",' "$LIB_FILE"
+          grep -q "audio/iamf" "$LIB_FILE" || sed -i '/"audio\/opus"/a \    "audio\/iamf",' "$LIB_FILE"
 
-          # THE FIX: Swapping OFF for PREFER globally 
-          # This avoids the "already defined" variable error in DefaultRenderersFactory.java
+          # 3. THE FIX: Force "PREFER" Mode (Without defining new variables)
+          # We replace the usage of OFF with PREFER. This works even if the variable is already defined.
           sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$FACTORY"
           sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL"
 
-          # Clean Manifests for Gradle 8 compatibility [cite: 19]
+          # 4. Clean Manifests for Gradle 8 compatibility [cite: 19]
           find media -name "AndroidManifest.xml" -exec sed -i 's/package="androidx.media3[^"]*"//g' {} +
 
       - name: 🛡️ Inject UI & Bridge Logic
         run: |
           ACTIVITY=$(find media/demos/main -name "SampleChooserActivity.java" | head -n 1)
           
-          # Inject the file-picking UI button [cite: 7, 8]
+          # Inject UI Button [cite: 6, 7, 8]
           sed -i '/import android.widget.Button;/d' "$ACTIVITY"
           sed -i '/setContentView/a \
             android.widget.Button b = new android.widget.Button(this);\
-            b.setText("📂 OPEN VVC/APV/IAMF");\
+            b.setText("📂 OPEN VVC/APV/IAMF FILE");\
             b.setBackgroundColor(0xFF6200EE);\
             b.setTextColor(0xFFFFFFFF);\
             b.setOnClickListener(v -> {\
@@ -78,7 +81,7 @@ jobs:
             });\
             addContentView(b, new android.view.ViewGroup.LayoutParams(-1, 300));' "$ACTIVITY"
 
-          # Use Python to insert the result handling bridge [cite: 11, 12, 16]
+          # Python Bridge: Logic to launch Player with Extension Preference [cite: 9, 10, 11]
           python3 - <<EOF
           import os
           path = '$ACTIVITY'
@@ -93,6 +96,8 @@ jobs:
                       pi.setClass(this, androidx.media3.demo.main.PlayerActivity.class);
                       pi.setData(uri);
                       pi.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                      
+                      // Critical: These flags force the player to use your custom FFmpeg build [cite: 14, 15]
                       pi.putExtra("prefer_extension_decoders", true);
                       pi.putExtra("title", "Pro Media File");
                       startActivity(pi);
