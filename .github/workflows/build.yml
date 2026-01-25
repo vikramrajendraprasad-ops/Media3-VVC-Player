@@ -107,7 +107,7 @@ jobs:
       - name: Register Codecs & Extensions
         run: |
           LIB_FILE=$(find media -name "FfmpegLibrary.java" | head -n 1)
-          sed -i 's/"video/hevc"/"video/hevc", "video/vvc", "video/apv", "audio/iamf"/' "$LIB_FILE"
+          sed -i 's|"video/hevc"|"video/hevc", "video/vvc", "video/apv", "audio/iamf"|' "$LIB_FILE"
           
           UTIL=$(find media -name "DemoUtil.java" | head -n 1)
           sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL"
