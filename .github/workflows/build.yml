@@ -34,9 +34,10 @@ jobs:
           chmod +x build_ffmpeg.sh
           # Force arm64 target to save build time
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
-          # Note: Removed "24" as it breaks the decoder list parsing. 
-          # Arguments: [Module Path] [NDK Path] [Host] [Decoders...]
-          ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" vvc apv iamf opus h264 hevc
+          
+          # CORRECTED COMMAND: Added "24" back as the 4th argument (Target API Level)
+          # Format: [Module] [NDK] [Host] [API_Level] [Decoders...]
+          ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" 24 vvc apv iamf opus h264 hevc
 
       - name: 🛡️ Professional Surgery (VVC/APV/IAMF)
         shell: python
@@ -53,10 +54,9 @@ jobs:
                           f.write(new_content)
                       print(f"Successfully patched: {file_path}")
                   else:
-                      print(f"Warning: Search text not found in {file_path}")
+                      print(f"Warning: Search text '{search_text}' not found in {file_path}")
 
           # 1. Register New MIME Types in FFmpeg Extension
-          # Uses os.popen to find the file safely
           lib_files = os.popen('find media -name "FfmpegLibrary.java"').read().splitlines()
           if lib_files:
               patch_file(lib_files[0], '"video/hevc"', '"video/hevc", "video/vvc", "video/apv", "audio/iamf"')
@@ -73,14 +73,13 @@ jobs:
               with open(activity_file, 'r') as f:
                   content = f.read()
               
-              # Add the Purple "Open Local" Button Logic
+              # Button Logic
               btn_logic = 'android.widget.Button b = new android.widget.Button(this); b.setText("📂 OPEN VVC/APV/IAMF"); b.setBackgroundColor(0xFF6200EE); b.setTextColor(0xFFFFFFFF); b.setOnClickListener(v -> { android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT); i.setType("*/*"); startActivityForResult(i, 1001); }); addContentView(b, new android.view.ViewGroup.LayoutParams(-1, 200));'
               
               if 'setContentView(view);' in content:
                   content = content.replace('setContentView(view);', f'setContentView(view); {btn_logic}')
                   
-                  # Add the Intent Bridge logic for VVC routing
-                  # We inject this before the closing brace of the class
+                  # Intent Bridge Logic
                   intent_bridge = """
                   @Override
                   public void onActivityResult(int req, int res, android.content.Intent data) {
@@ -104,7 +103,7 @@ jobs:
                           f.write(content)
                       print("Successfully injected Java logic.")
               else:
-                   print("Error: Could not find setContentView hook.")
+                  print("Error: Could not find setContentView hook.")
 
       - name: Final Compilation
         run: |
