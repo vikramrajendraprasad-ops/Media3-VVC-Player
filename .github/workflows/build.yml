@@ -114,16 +114,10 @@ jobs:
           
           find media -name "AndroidManifest.xml" -exec sed -i 's/package="androidx.media3[^"]*"//g' {} +
 
-      - name: Final Compilation
+            - name: Final Compilation
         run: |
           cd media
           chmod +x gradlew
           ./gradlew :demo:assembleDebug
           mkdir -p ../output_apk
-          find . -name "*decoder-extensions*.apk" -exec cp {} ../output_apk/VVC_Pro_Player.apk ;
-
-      - name: Upload Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: Media3-Pro-Player
-          path: output_apk/VVC_Pro_Player.apk
+          cp media/demos/main/build/outputs/apk/debug/*debug*.apk ../output_apk/VVC_Pro_Player.apk
