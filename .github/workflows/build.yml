@@ -94,7 +94,7 @@ jobs:
             case Atom.TYPE_iamf:\n\
               return "audio/iamf";' "$PARSER"
         else
-          echo "⚠️ MP4 parser not found — skipping (MKV only)"
+          echo "⚠️ MP4 parser not found — skipping (MKV-only support)"
         fi
 
     # --------------------------------------------------
@@ -121,18 +121,28 @@ jobs:
           "audio\/iamf",' "$LIB"
 
     # --------------------------------------------------
-    # 9️⃣ Build APK (CORRECT MODULE FOR YOUR TREE)
+    # 9️⃣ Build APK (AUTO-DETECT MODULE)
     # --------------------------------------------------
     - name: Build Media3 demo APK
       run: |
         cd media
         chmod +x gradlew
 
-        ./gradlew :demo:assembleDebug
+        if ./gradlew projects | grep -q ":demos:main"; then
+          echo "✅ Using :demos:main"
+          ./gradlew :demos:main:assembleDebug
+          APK_DIR="demos/main/build/outputs/apk/debug"
+        else
+          echo "✅ Using :demo"
+          ./gradlew :demo:assembleDebug
+          APK_DIR="demo/build/outputs/apk/debug"
+        fi
+
+        echo "=== APK files ==="
+        ls "$APK_DIR" || true
 
         mkdir -p ../output
-        cp demo/build/outputs/apk/debug/*.apk \
-           ../output/Media3_VVC_APV_IAMF.apk
+        cp "$APK_DIR"/*.apk ../output/Media3_VVC_APV_IAMF.apk
 
     # --------------------------------------------------
     # 🔟 Upload APK artifact
