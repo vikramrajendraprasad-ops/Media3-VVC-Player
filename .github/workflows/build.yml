@@ -13,7 +13,7 @@ jobs:
           ref: main
 
       - name: Install Build Tools
-        run: sudo apt-get update && sudo apt-get install -y nasm yasm make git
+        run: sudo apt-get update && sudo apt-get install -y nasm yasm make git python3
 
       - name: Setup JDK 17
         uses: actions/setup-java@v4
@@ -27,81 +27,61 @@ jobs:
         with:
           ndk-version: r26b
 
-      - name: Prepare FFmpeg Source
+      - name: Build Native Core (VVC+APV+IAMF)
         run: |
           cd media/libraries/decoder_ffmpeg/src/main/jni
           git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git ffmpeg
-
-      - name: Build Native Core (VVC+APV+IAMF+Opus)
-        run: |
-          cd media/libraries/decoder_ffmpeg/src/main/jni
           chmod +x build_ffmpeg.sh
+          # Enable arm64 only to speed up build
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
-          sed -i 's/--disable-postproc//g' build_ffmpeg.sh
-          sed -i '/DECODER_FLAGS=/ s/="([^"]*)"/="\u0001 --enable-decoder=vvc --enable-decoder=apv --enable-decoder=iamf --enable-decoder=h264 --enable-decoder=hevc --enable-libopus"/' build_ffmpeg.sh
-          cd ffmpeg && git checkout master && git pull origin master --depth=1 || true
-          cd ..
-          ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" "24"
+          
+          # Pass specific decoders directly to the script
+          ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" \
+            "linux-x86_64" "24" vvc apv iamf opus h264 hevc
 
-      - name: 🛡️ Inject UI & Fixed Action Bridge
+      - name: 🛡️ Surgery: Codecs & UI Injection
         run: |
-          ACTIVITY=$(find media/demos/main -name "SampleChooserActivity.java" | head -n 1)
-          sed -i '/import android.widget.Button;/d' "$ACTIVITY"
-          sed -i '/setContentView(/a \
-            android.widget.Button proBtn = new android.widget.Button(this);\
-            proBtn.setText("📂 OPEN LOCAL FILE (VVC/APV/IAMF)");\
-            proBtn.setBackgroundColor(0xFF6200EE);\
-            proBtn.setTextColor(0xFFFFFFFF);\
-            proBtn.setPadding(30, 30, 30, 30);\
-            proBtn.setOnClickListener(v -> {\
-                android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);\
-                intent.addCategory(android.content.Intent.CATEGORY_OPENABLE);\
-                intent.setType("*/*");\
-                startActivityForResult(intent, 1001);\
-            });\
-            android.widget.FrameLayout.LayoutParams params = new android.widget.FrameLayout.LayoutParams(\
-                android.view.ViewGroup.LayoutParams.MATCH_PARENT,\
-                200\
-            );\
-            params.gravity = android.view.Gravity.TOP;\
-            addContentView(proBtn, params);' "$ACTIVITY"
+          # 1. Register Codecs in FfmpegLibrary
+          LIB_FILE=$(find media -name "FfmpegLibrary.java" | head -n 1)
+          sed -i 's/"video\/hevc"/"video\/hevc", "video\/vvc", "video\/apv", "audio\/iamf"/g' "$LIB_FILE"
 
+          # 2. Force FFmpeg preference in DemoUtil
+          UTIL_FILE=$(find media -name "DemoUtil.java" | head -n 1)
+          sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL_FILE"
+
+          # 3. Inject Button & Logic into SampleChooserActivity (Updated Path)
+          ACTIVITY=$(find media/demo -name "SampleChooserActivity.java" | head -n 1)
+          
           python3 - <<EOF
           import os
-          path = '$ACTIVITY'
-          if os.path.exists(path):
-              with open(path, 'r') as f:
-                  content = f.read()
-              last_brace = content.rfind('}')
-              bridge_logic = '''@Override
-              public void onActivityResult(int requestCode, int resultCode, android.content.Intent data) {
-                  super.onActivityResult(requestCode, resultCode, data);
-                  if (requestCode == 1001 && resultCode == RESULT_OK && data != null && data.getData() != null) {
-                      android.net.Uri uri = data.getData();
-                      android.content.Intent playerIntent = new android.content.Intent("androidx.media3.demo.main.action.VIEW");
-                      playerIntent.setClass(this, androidx.media3.demo.main.PlayerActivity.class);
-                      playerIntent.setDataAndType(uri, "*/*");
-                      playerIntent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                      playerIntent.putExtra("prefer_extension_decoders", true);
-                      playerIntent.putExtra("force_default_track_selector", true);
-                      playerIntent.putExtra("uri", uri.toString());
-                      playerIntent.putExtra("title", "Local VVC/APV/IAMF File");
-                      startActivity(playerIntent);
-                  }
-              }'''
-              if last_brace != -1:
-                  new_content = content[:last_brace] + bridge_logic + content[last_brace:]
-                  with open(path, 'w') as f:
-                      f.write(new_content)
-          EOF
+          path = "$ACTIVITY"
+          with open(path, 'r') as f: content = f.read()
+          
+          # Inject the Button UI
+          btn_code = 'android.widget.Button b = new android.widget.Button(this); b.setText("📂 OPEN VVC/APV/IAMF"); b.setOnClickListener(v -> { android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT); i.setType("*/*"); startActivityForResult(i, 1001); }); addContentView(b, new android.view.ViewGroup.LayoutParams(-1, 250));'
+          content = content.replace('setContentView(view);', 'setContentView(view); ' + btn_code)
 
-      - name: Register Codecs & Extensions
-        run: |
-          LIB_FILE=$(find media -name "FfmpegLibrary.java" | head -n 1)
-          sed -i 's|"video/hevc"|"video/hevc", "video/vvc", "video/apv", "audio/iamf"|' "$LIB_FILE"
-          UTIL=$(find media -name "DemoUtil.java" | head -n 1)
-          sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL"
-          find media -name "AndroidManifest.xml" -exec sed -i 's/package="androidx.media3[^"]*"//g' {} +
+          # Inject onActivityResult logic
+          logic = """
+          @Override
+          public void onActivityResult(int req, int res, android.content.Intent data) {
+              super.onActivityResult(req, res, data);
+              if (req == 1001 && res == -1 && data != null) {
+                  android.content.Intent i = new android.content.Intent("androidx.media3.demo.main.action.VIEW");
+                  i.setClass(this, androidx.media3.demo.main.PlayerActivity.class);
+                  i.setDataAndType(data.getData(), "*/*");
+                  i.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                  i.putExtra("prefer_extension_decoders", true);
+                  i.putExtra("title", "Local File");
+                  startActivity(i);
+              }
+          }
+          """
+          # Insert before the last closing brace
+          content = content.rstrip().rstrip('}') + logic + "}"
+          
+          with open(path, 'w') as f: f.write(content)
+          EOF
 
       - name: Final Compilation
         run: |
@@ -109,11 +89,8 @@ jobs:
           chmod +x gradlew
           ./gradlew :demo:assembleDebug
 
-      - name: Upload APK Directories
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Media3-Pro-Player-APK
-          path: |
-            media/demos/main/build/outputs/apk/debug/
-            media/demos/main/build/outputs/apk/
-          if-no-files-found: ignore
+          name: Media3-VVC-Pro
+          path: media/demo/build/outputs/apk/debug/*.apk
