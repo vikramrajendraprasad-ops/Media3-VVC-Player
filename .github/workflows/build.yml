@@ -120,7 +120,7 @@ jobs:
           chmod +x gradlew
           ./gradlew :demo:assembleDebug
           mkdir -p ../output_apk
-          find . -name "*.apk" -not -path "*/build-cache/*" -exec cp {} ../output_apk/VVC_Pro_Player.apk ;
+          find . -name "*decoder-extensions*.apk" -exec cp {} ../output_apk/VVC_Pro_Player.apk ;
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
