@@ -12,8 +12,9 @@ jobs:
           path: media
           ref: main
 
+      # ✅ FIXED: Combined into a single line to prevent "Line 14" syntax error
       - name: Install Build Tools
-        [span_1](start_span)run: sudo apt-get update && sudo apt-get install -y nasm yasm make git python3[span_1](end_span)
+        run: sudo apt-get update && sudo apt-get install -y nasm yasm make git python3
 
       - name: Setup JDK 17
         uses: actions/setup-java@v4
@@ -25,21 +26,22 @@ jobs:
         id: setup-ndk
         uses: nttld/setup-ndk@v1
         with:
-          [span_2](start_span)ndk-version: r26b[span_2](end_span)
+          ndk-version: r26b
 
       - name: Build Native FFmpeg Core
         run: |
-          [span_3](start_span)cd media/libraries/decoder_ffmpeg/src/main/jni[span_3](end_span)
+          cd media/libraries/decoder_ffmpeg/src/main/jni
           git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git ffmpeg
           chmod +x build_ffmpeg.sh
           
-          # Force arm64 target
+          # Force arm64 target to save time
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
-          # Remove obsolete flag that breaks new FFmpeg
+          
+          # Remove obsolete flag that breaks newer FFmpeg builds
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
 
-          # CORRECTED COMMAND: Removed "24" to ensure "vvc" is recognized as a decoder
-          [span_4](start_span)./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" vvc apv iamf opus h264 hevc[span_4](end_span)
+          # ✅ CORRECTED: Removed "24" so "vvc" is correctly detected as a decoder
+          ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" vvc apv iamf opus h264 hevc
 
       - name: 🛡️ Inject Logic (Java & Codec Mapping)
         shell: python
@@ -57,14 +59,12 @@ jobs:
               
               modified = False
               
-              # Simple string replacements
               if simple_replace_pairs:
                   for search, replace in simple_replace_pairs:
                       if search in content:
                           content = content.replace(search, replace)
                           modified = True
               
-              # Complex logic injection
               if injection_func:
                   new_content = injection_func(content)
                   if new_content != content:
@@ -76,42 +76,37 @@ jobs:
                       f.write(content)
                   print(f"Patched: {path}")
 
-          # --- 1. PATCH FfmpegLibrary.java (The Critical Fix) ---
-          # We must map "video/vvc" -> "vvc" decoder name
+          # --- 1. PATCH FfmpegLibrary.java (Fixes Black Screen) ---
           lib_file = os.popen('find media -name "FfmpegLibrary.java"').read().strip()
           
           def inject_codec_map(content):
-              # 1. Add MIME types to the list
+              # Add MIME types
               if '"video/hevc"' in content and '"video/vvc"' not in content:
                   content = content.replace('"video/hevc"', '"video/hevc", "video/vvc", "video/apv", "audio/iamf"')
               
-              # 2. Add Codec Name Mapping (Fixes Black Screen)
-              # We look for the switch case for HEVC and append VVC right after it
+              # Add Codec Name Mapping (The Critical Fix for VVC)
               if 'return "hevc";' in content and 'case "video/vvc":' not in content:
                   replacement = 'return "hevc";\n      case "video/vvc": return "vvc";\n      case "video/apv": return "apv";'
                   content = content.replace('return "hevc";', replacement)
-              
               return content
 
           patch_content(lib_file, injection_func=inject_codec_map)
-
 
           # --- 2. PATCH DemoUtil.java (Enable Extension) ---
           util_file = os.popen('find media -name "DemoUtil.java"').read().strip()
           patch_content(util_file, [("EXTENSION_RENDERER_MODE_OFF", "EXTENSION_RENDERER_MODE_PREFER")])
 
-
           # --- 3. PATCH SampleChooserActivity.java (UI & Intent) ---
-          [span_5](start_span)act_file = os.popen('find media -name "SampleChooserActivity.java" | head -n 1').read().strip()[span_5](end_span)
+          act_file = os.popen('find media -name "SampleChooserActivity.java" | head -n 1').read().strip()
           
           def inject_activity_logic(content):
-              # Inject Button Logic
+              # Inject Button
               btn_code = 'android.widget.Button b = new android.widget.Button(this); b.setText("📂 OPEN VVC/APV"); b.setBackgroundColor(0xFF6200EE); b.setTextColor(0xFFFFFFFF); b.setOnClickListener(v -> { android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT); i.setType("*/*"); startActivityForResult(i, 1001); }); addContentView(b, new android.view.ViewGroup.LayoutParams(-1, 200));'
               
               if 'setContentView(view);' in content and 'OPEN VVC' not in content:
                   content = content.replace('setContentView(view);', f'setContentView(view); {btn_code}')
 
-              # Inject onActivityResult (The Bridge)
+              # Inject Bridge Logic
               bridge = """
               @Override
               public void onActivityResult(int req, int res, android.content.Intent data) {
@@ -131,7 +126,6 @@ jobs:
                   last_brace = content.rfind('}')
                   if last_brace != -1:
                       content = content[:last_brace] + bridge + "}"
-              
               return content
 
           patch_content(act_file, injection_func=inject_activity_logic)
@@ -143,7 +137,7 @@ jobs:
           ./gradlew :demo:assembleDebug
 
       - name: Upload Artifact
-        [span_6](start_span)uses: actions/upload-artifact@v4[span_6](end_span)
+        uses: actions/upload-artifact@v4
         with:
           name: Media3-VVC-Pro-Player
           path: media/demo/build/outputs/apk/debug/*.apk
