@@ -61,7 +61,7 @@ jobs:
                 startActivityForResult(intent, 1001);\
             });\
             android.widget.FrameLayout.LayoutParams params = new android.widget.FrameLayout.LayoutParams(\
-                android.view.ViewGroup.LayoutGroup.LayoutParams.MATCH_PARENT,\
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,\
                 200\
             );\
             params.gravity = android.view.Gravity.TOP;\
@@ -107,7 +107,8 @@ jobs:
       - name: Register Codecs & Extensions
         run: |
           LIB_FILE=$(find media -name "FfmpegLibrary.java" | head -n 1)
-          sed -i '/"video/hevc"/a     "video/vvc", "video/apv", "audio/iamf",' "$LIB_FILE"
+          sed -i "/"video/hevc"/a\\
+            "video/vvc", "video/apv", "audio/iamf"," "$LIB_FILE"
           
           UTIL=$(find media -name "DemoUtil.java" | head -n 1)
           sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL"
