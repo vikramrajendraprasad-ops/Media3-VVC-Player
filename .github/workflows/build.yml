@@ -33,14 +33,14 @@ jobs:
           git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git ffmpeg
           chmod +x build_ffmpeg.sh
           
-          # 1. Force arm64 target (Critical for build speed & modern devices)
+          # 1. Force arm64 target (Critical for speed/compatibility)
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
           
-          # 2. Fix compatibility with latest FFmpeg (Removes obsolete flag)
+          # 2. Fix "Unknown option" error for new FFmpeg
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
 
-          # 3. THE FIX: Added "21" (API Level) before "vvc".
-          # Format: [Module] [NDK] [Host] [API] [Decoders...]
+          # 3. BUILD COMMAND (API 21 + Decoders)
+          # We force API 21 to prevent the "vvc-clang" error
           ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" 21 vvc apv iamf opus h264 hevc
 
       - name: 🛡️ Inject Logic (Fixes Black Screen & UI)
@@ -61,30 +61,33 @@ jobs:
                   print(f"Patched: {path}")
 
           # --- 1. PATCH FfmpegLibrary.java (CRITICAL FOR VIDEO) ---
-          # This maps the "video/vvc" MIME type to the "vvc" decoder name.
-          # Without this, you get audio but a black screen.
+          # This connects the "video/vvc" MIME type to the underlying decoder.
           lib_file = os.popen('find media -name "FfmpegLibrary.java"').read().strip()
           
           def inject_codec_map(content):
-              # Add MIME types if missing
+              # Add MIME types
               if '"video/hevc"' in content and '"video/vvc"' not in content:
                   content = content.replace('"video/hevc"', '"video/hevc", "video/vvc", "video/apv", "audio/iamf"')
               
-              # Add the switch case for VVC
+              # Add switch case (Fixes Black Screen)
               if 'return "hevc";' in content and 'case "video/vvc":' not in content:
                   replacement = 'return "hevc";\n      case "video/vvc": return "vvc";\n      case "video/apv": return "apv";'
                   content = content.replace('return "hevc";', replacement)
               return content
 
-          patch_content(lib_file, inject_codec_map)
+          if lib_file:
+              patch_content(lib_file, inject_codec_map)
 
           # --- 2. PATCH DemoUtil.java (Force Extensions) ---
           util_file = os.popen('find media -name "DemoUtil.java"').read().strip()
           def enable_extensions(content):
               return content.replace("EXTENSION_RENDERER_MODE_OFF", "EXTENSION_RENDERER_MODE_PREFER")
-          patch_content(util_file, enable_extensions)
+          
+          if util_file:
+              patch_content(util_file, enable_extensions)
 
-          # --- 3. PATCH SampleChooserActivity.java (Purple Button) ---
+          # --- 3. PATCH SampleChooserActivity.java (Button & Intent) ---
+          # We use 'find' to locate it safely regardless of folder structure
           act_file = os.popen('find media -name "SampleChooserActivity.java" | head -n 1').read().strip()
           
           def inject_ui(content):
@@ -115,17 +118,24 @@ jobs:
                   if last_brace != -1:
                       content = content[:last_brace] + bridge + "}"
               return content
+          
+          if act_file:
+              patch_content(act_file, inject_ui)
 
-          patch_content(act_file, inject_ui)
-
-      - name: Final Compilation
+      - name: Final Compilation & Packaging
         run: |
           cd media
           chmod +x gradlew
+          # Build the demo
           ./gradlew :demo:assembleDebug
+          
+          # SAFETY STEP: Find the APK wherever it is and copy it to a known folder
+          mkdir -p ../final_apk
+          find . -name "*.apk" -not -path "*/build-cache/*" -exec cp {} ../final_apk/VVC_Pro_Player.apk \;
+          echo "APK moved to final_apk folder."
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Media3-VVC-Pro-Player
-          path: media/demo/build/outputs/apk/debug/*.apk
+          path: final_apk/VVC_Pro_Player.apk
