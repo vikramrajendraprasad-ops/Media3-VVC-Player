@@ -33,23 +33,18 @@ jobs:
           git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git ffmpeg
           chmod +x build_ffmpeg.sh
           
-          # Force arm64 (Standard for all modern phones)
+          # Force arm64
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
           # Remove broken flag
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
 
-          # Build with API 21 (Prevents the "vvc-clang" error)
+          # Build with API 21
           ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" 21 vvc apv iamf opus h264 hevc
 
-      # ✅ RESTORED: The "Purple Button" is now injected via Shell (Visible & Safe)
+      # 🛡️ UI Injection (Purple Button)
       - name: 🛡️ Inject UI (Purple Button)
         run: |
-          # Find the activity file safely
           ACTIVITY=$(find media -name "SampleChooserActivity.java" | head -n 1)
-          echo "Injecting Button into: $ACTIVITY"
-
-          # We append the button logic right after 'setContentView' matches
-          # This uses the exact logic you trusted before
           sed -i '/setContentView/a \
             android.widget.Button proBtn = new android.widget.Button(this);\
             proBtn.setText("📂 OPEN LOCAL FILE (VVC/APV)");\
@@ -64,13 +59,13 @@ jobs:
             });\
             addContentView(proBtn, new android.view.ViewGroup.LayoutParams(-1, 200));' "$ACTIVITY"
 
-      - name: 🛡️ Inject Brains (Codecs & Bridge)
+      # 🛡️ Smart Decoder Logic (The Fix for MP4 Black Screen)
+      - name: 🛡️ Inject Smart Logic
         shell: python
         run: |
           import os
 
-          # 1. PATCH FfmpegLibrary.java (The Transmission)
-          # We must map "video/vvc" -> "vvc" or you get a BLACK SCREEN.
+          # 1. PATCH FfmpegLibrary.java (Fuzzy Matching)
           lib_file = os.popen('find media -name "FfmpegLibrary.java"').read().strip()
           
           if os.path.exists(lib_file):
@@ -81,13 +76,16 @@ jobs:
               if '"video/hevc"' in content and '"video/vvc"' not in content:
                   content = content.replace('"video/hevc"', '"video/hevc", "video/vvc", "video/apv", "audio/iamf"')
               
-              # Add Decoder Mapping
-              if 'return "hevc";' in content and 'case "video/vvc":' not in content:
-                  replacement = 'return "hevc";\n      case "video/vvc": return "vvc";\n      case "video/apv": return "apv";'
-                  content = content.replace('return "hevc";', replacement)
+              # INJECT SMART LOGIC:
+              # Instead of a strict switch case, we inject IF statements at the top of getCodecName.
+              # This catches "video/x-apv", "video/apv", "video/my-custom-apv" -> ALL of them.
+              smart_hook = 'public static String getCodecName(String mimeType) { if (mimeType.contains("vvc")) return "vvc"; if (mimeType.contains("apv")) return "apv"; if (mimeType.contains("iamf")) return "iamf";'
+              
+              if 'public static String getCodecName(String mimeType) {' in content:
+                  content = content.replace('public static String getCodecName(String mimeType) {', smart_hook)
                   with open(lib_file, 'w') as f:
                       f.write(content)
-                  print("✅ Connected VVC/APV Decoders")
+                  print("✅ Applied Fuzzy Matching Patch")
 
           # 2. PATCH DemoUtil.java (Force Extensions)
           util_file = os.popen('find media -name "DemoUtil.java"').read().strip()
@@ -98,10 +96,8 @@ jobs:
               if content != new_content:
                   with open(util_file, 'w') as f:
                       f.write(new_content)
-                  print("✅ Forced Extension Renderer")
 
-          # 3. PATCH SampleChooserActivity.java (The Bridge)
-          # We need to handle the file result. Inserting before the last '}' is safest in Python.
+          # 3. PATCH SampleChooserActivity.java (Bridge)
           act_file = os.popen('find media -name "SampleChooserActivity.java" | head -n 1').read().strip()
           
           if os.path.exists(act_file):
@@ -118,7 +114,7 @@ jobs:
                       pI.setDataAndType(data.getData(), "*/*");
                       pI.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
                       pI.putExtra("prefer_extension_decoders", true);
-                      pI.putExtra("title", "Local VVC File");
+                      pI.putExtra("title", "Smart Stream");
                       startActivity(pI);
                   }
               }
@@ -129,15 +125,12 @@ jobs:
                       content = content[:last_brace] + bridge_logic + "}"
                       with open(act_file, 'w') as f:
                           f.write(content)
-                      print("✅ Injected Intent Bridge")
 
       - name: Final Compilation
         run: |
           cd media
           chmod +x gradlew
           ./gradlew :demo:assembleDebug
-          
-          # SAFETY: Find and Move APK so Upload never fails
           mkdir -p ../final_apk
           find . -name "*.apk" -not -path "*/build-cache/*" -exec cp {} ../final_apk/VVC_Pro_Player.apk \;
 
