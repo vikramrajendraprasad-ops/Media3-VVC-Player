@@ -64,7 +64,7 @@ jobs:
           vvc apv iamf opus hevc h264
 
     # --------------------------------------------------
-    # 6️⃣ Patch Media3 MP4 parser (SAFE, OPTIONAL)
+    # 6️⃣ Patch Media3 MP4 parser (SAFE & OPTIONAL)
     # --------------------------------------------------
     - name: Patch Media3 MP4 parser for VVC / APV / IAMF
       run: |
@@ -73,8 +73,8 @@ jobs:
         ATOM=$(find media -path "*mp4*" -name "Atom.java" | head -n 1)
         PARSER=$(find media -path "*mp4*" -name "AtomParsers.java" | head -n 1)
 
-        echo "Atom.java found at: $ATOM"
-        echo "AtomParsers.java found at: $PARSER"
+        echo "Atom.java: $ATOM"
+        echo "AtomParsers.java: $PARSER"
 
         if [ -n "$ATOM" ] && [ -n "$PARSER" ]; then
           echo "🔧 Patching MP4 parser (experimental)"
@@ -94,7 +94,7 @@ jobs:
             case Atom.TYPE_iamf:\n\
               return "audio/iamf";' "$PARSER"
         else
-          echo "⚠️ MP4 parser not found — skipping (MKV still supported)"
+          echo "⚠️ MP4 parser not found — skipping (MKV only)"
         fi
 
     # --------------------------------------------------
@@ -121,17 +121,17 @@ jobs:
           "audio\/iamf",' "$LIB"
 
     # --------------------------------------------------
-    # 9️⃣ Build APK (CORRECT MODULE)
+    # 9️⃣ Build APK (CORRECT MODULE FOR YOUR TREE)
     # --------------------------------------------------
     - name: Build Media3 demo APK
       run: |
         cd media
         chmod +x gradlew
 
-        ./gradlew :demos:main:assembleDebug
+        ./gradlew :demo:assembleDebug
 
         mkdir -p ../output
-        cp demos/main/build/outputs/apk/debug/*.apk \
+        cp demo/build/outputs/apk/debug/*.apk \
            ../output/Media3_VVC_APV_IAMF.apk
 
     # --------------------------------------------------
