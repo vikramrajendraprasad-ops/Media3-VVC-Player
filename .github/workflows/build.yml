@@ -13,7 +13,7 @@ jobs:
           ref: main
 
       - name: Install Build Tools
-        [cite_start]run: sudo apt-get update && sudo apt-get install -y nasm yasm make [cite: 2]
+        run: sudo apt-get update && sudo apt-get install -y nasm yasm make
 
       - name: Setup JDK 17
         uses: actions/setup-java@v4
@@ -25,49 +25,49 @@ jobs:
         id: setup-ndk
         uses: nttld/setup-ndk@v1
         with:
-          [cite_start]ndk-version: r26b [cite: 3]
+          ndk-version: r26b
 
       - name: Prepare FFmpeg Source
         run: |
-          cd media/libraries/decoder_ffmpeg/src/main/jni [cite: 4]
-          git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git ffmpeg [cite: 4]
+          cd media/libraries/decoder_ffmpeg/src/main/jni
+          git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git ffmpeg
 
       - name: Build Native FFmpeg (VVC+APV+IAMF)
         run: |
-          cd media/libraries/decoder_ffmpeg/src/main/jni 
-          chmod +x build_ffmpeg.sh 
-          sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh 
-          sed -i 's/--disable-postproc//g' build_ffmpeg.sh 
-          # Explicitly enabling the new formats in the native build
-          ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" "24" vvc apv iamf opus h264 hevc 
+          cd media/libraries/decoder_ffmpeg/src/main/jni
+          chmod +x build_ffmpeg.sh
+          sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
+          sed -i 's/--disable-postproc//g' build_ffmpeg.sh
+          # Building with explicit support for vvc, apv, and iamf
+          ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" "24" vvc apv iamf opus h264 hevc
 
-      - name: 🛡️ Surgery: Fix Duplicate Variable Error
+      - name: 🛡️ Surgery: Fix Duplicate Variable & Register Codecs
         run: |
+          LIB_FILE=$(find media -name "FfmpegLibrary.java" | head -n 1)
           FACTORY=$(find media -name "DefaultRenderersFactory.java" | head -n 1)
-          LIB_FILE=$(find media -name "FfmpegLibrary.java" | head -n 1) 
-          DEMO_UTIL=$(find media -name "DemoUtil.java" | head -n 1) 
+          UTIL=$(find media -name "DemoUtil.java" | head -n 1)
 
-          # THE CRITICAL FIX: Replace 'OFF' with 'PREFER' without defining new variables.
-          # This avoids the "variable EXTENSION_RENDERER_MODE_PREFER is already defined" error.
+          # 1. Register Codecs in JNI Bridge (Only if missing)
+          grep -q "video/vvc" "$LIB_FILE" || sed -i '/"video\/hevc"/a \    "video\/vvc",\n    "video\/apv",' "$LIB_FILE"
+          grep -q "audio/iamf" "$LIB_FILE" || sed -i '/"audio\/opus"/a \    "audio\/iamf",' "$LIB_FILE"
+          
+          # 2. THE FIX: Change existing OFF to PREFER globally
+          # This bypasses the "variable already defined" error by not defining new variables
           sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$FACTORY"
-          [cite_start]sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$DEMO_UTIL" [cite: 18]
-
-          # Register native codecs in the JNI bridge if missing
-          [cite_start]grep -q "video/vvc" "$LIB_FILE" || sed -i '/"video\/hevc"/a \    "video\/vvc",\n    "video\/apv",' "$LIB_FILE" [cite: 18]
-          [cite_start]grep -q "audio/iamf" "$LIB_FILE" || sed -i '/"audio\/opus"/a \    "audio\/iamf",' "$LIB_FILE" [cite: 18]
-
-          # Clean manifests for Gradle 8 compatibility
-          [cite_start]find media -name "AndroidManifest.xml" -exec sed -i 's/package="androidx.media3[^"]*"//g' {} + [cite: 19]
+          sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL"
+          
+          # 3. Clean Manifests
+          find media -name "AndroidManifest.xml" -exec sed -i 's/package="androidx.media3[^"]*"//g' {} +
 
       - name: 🛡️ Inject UI & Bridge Logic
         run: |
-          ACTIVITY=$(find media/demos/main -name "SampleChooserActivity.java" | head -n 1) [cite: 6]
+          ACTIVITY=$(find media/demos/main -name "SampleChooserActivity.java" | head -n 1)
           
-          # Inject UI Button [cite: 7, 8]
+          # Inject UI Button
           sed -i '/import android.widget.Button;/d' "$ACTIVITY"
           sed -i '/setContentView/a \
             android.widget.Button b = new android.widget.Button(this);\
-            b.setText("📂 OPEN VVC/APV/IAMF FILE");\
+            b.setText("📂 OPEN VVC/APV/IAMF");\
             b.setBackgroundColor(0xFF6200EE);\
             b.setTextColor(0xFFFFFFFF);\
             b.setOnClickListener(v -> {\
@@ -78,7 +78,7 @@ jobs:
             });\
             addContentView(b, new android.view.ViewGroup.LayoutParams(-1, 300));' "$ACTIVITY"
 
-          # Python bridge to handle file selection [cite: 9, 10, 11]
+          # Python helper for clean Java injection
           python3 - <<EOF
           import os
           path = '$ACTIVITY'
@@ -91,15 +91,15 @@ jobs:
                       android.net.Uri uri = data.getData();
                       android.content.Intent pi = new android.content.Intent("androidx.media3.demo.main.action.VIEW");
                       pi.setClass(this, androidx.media3.demo.main.PlayerActivity.class);
-                      pi.setData(uri); [cite: 13]
-                      pi.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION); [cite: 14]
-                      pi.putExtra("prefer_extension_decoders", true); [cite: 15]
-                      pi.putExtra("title", "Pro Media File"); [cite: 16]
+                      pi.setData(uri);
+                      pi.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                      pi.putExtra("prefer_extension_decoders", true);
+                      pi.putExtra("title", "Pro Media File");
                       startActivity(pi);
                   }
               }
           '''
-          [cite_start]new_content = content[:content.rfind('}')] + bridge + "}" [cite: 17]
+          new_content = content[:content.rfind('}')] + bridge + "}"
           with open(path, 'w') as f: f.write(new_content)
           EOF
 
@@ -109,10 +109,10 @@ jobs:
           chmod +x gradlew
           ./gradlew :demo:assembleDebug
           mkdir -p ../output_apk
-          find . -name "*.apk" -not -path "*/build-cache/*" -exec cp {} ../output_apk/VVC_Player.apk \;
+          find . -name "*.apk" -not -path "*/build-cache/*" -exec cp {} ../output_apk/VVC_Pro_Player.apk \;
 
-      - name: Upload APK
-        [cite_start]uses: actions/upload-artifact@v4 [cite: 20]
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: VVC-Player-APK
-          path: output_apk/VVC_Player.apk
+          name: Media3-Pro-Player
+          path: output_apk/VVC_Pro_Player.apk
