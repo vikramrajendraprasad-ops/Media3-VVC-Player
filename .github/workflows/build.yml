@@ -19,13 +19,12 @@ jobs:
         ref: main
 
     # --------------------------------------------------
-    # 2️⃣ Install build tools
+    # 2️⃣ Install system dependencies
     # --------------------------------------------------
     - name: Install system dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y \
-          nasm yasm make python3
+        sudo apt-get install -y nasm yasm make python3
 
     # --------------------------------------------------
     # 3️⃣ Java + Android NDK
@@ -42,7 +41,7 @@ jobs:
         ndk-version: r26b
 
     # --------------------------------------------------
-    # 4️⃣ Prepare FFmpeg source
+    # 4️⃣ Clone FFmpeg
     # --------------------------------------------------
     - name: Clone FFmpeg
       run: |
@@ -57,7 +56,6 @@ jobs:
         cd media/libraries/decoder_ffmpeg/src/main/jni
         chmod +x build_ffmpeg.sh
 
-        # arm64 only
         sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
         sed -i 's/--disable-postproc//g' build_ffmpeg.sh
 
@@ -66,10 +64,80 @@ jobs:
           vvc apv iamf opus hevc h264
 
     # --------------------------------------------------
-    # 6️⃣ 🔥 PATCH Media3 MP4 EXTRACTOR (CRITICAL)
+    # 6️⃣ Patch Media3 MP4 extractor (auto-detect)
     # --------------------------------------------------
     - name: Patch Media3 extractor for VVC / APV / IAMF
       run: |
         set -e
 
         ATOM=$(find media -name "Atom.java" | grep mp4 | head -n 1)
+        PARSER=$(find media -name "AtomParsers.java" | grep mp4 | head -n 1)
+
+        echo "Atom.java: $ATOM"
+        echo "AtomParsers.java: $PARSER"
+
+        if [ -z "$ATOM" ] || [ -z "$PARSER" ]; then
+          echo "❌ Atom files not found"
+          exit 1
+        fi
+
+        sed -i '/TYPE_hvc1/a \
+          public static final int TYPE_vvc1 = Util.getIntegerCodeForString("vvc1");\n\
+          public static final int TYPE_vvi1 = Util.getIntegerCodeForString("vvi1");\n\
+          public static final int TYPE_apv1 = Util.getIntegerCodeForString("apv1");\n\
+          public static final int TYPE_iamf = Util.getIntegerCodeForString("iamf");' "$ATOM"
+
+        sed -i '/switch *(atomType)/a \
+          case Atom.TYPE_vvc1:\n\
+          case Atom.TYPE_vvi1:\n\
+            return "video/vvc";\n\
+          case Atom.TYPE_apv1:\n\
+            return "video/apv";\n\
+          case Atom.TYPE_iamf:\n\
+            return "audio/iamf";' "$PARSER"
+
+    # --------------------------------------------------
+    # 7️⃣ Force FFmpeg renderer only
+    # --------------------------------------------------
+    - name: Force FFmpeg decoder only
+      run: |
+        UTIL=$(find media -name "DemoUtil.java" | head -n 1)
+
+        sed -i 's/new DefaultRenderersFactory(context)/new DefaultRenderersFactory(context)\
+          .setEnableDecoderFallback(false)\
+          .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)/' "$UTIL"
+
+    # --------------------------------------------------
+    # 8️⃣ Register experimental codecs
+    # --------------------------------------------------
+    - name: Register experimental codecs
+      run: |
+        LIB=$(find media -name "FfmpegLibrary.java" | head -n 1)
+
+        sed -i '/video\/hevc/a \
+          "video\/vvc",\n\
+          "video\/apv",\n\
+          "audio\/iamf",' "$LIB"
+
+    # --------------------------------------------------
+    # 9️⃣ Build APK (CORRECT MODULE)
+    # --------------------------------------------------
+    - name: Build Media3 demo APK
+      run: |
+        cd media
+        chmod +x gradlew
+
+        ./gradlew :demos:main:assembleDebug
+
+        mkdir -p ../output
+        cp demos/main/build/outputs/apk/debug/*.apk \
+           ../output/Media3_VVC_APV_IAMF.apk
+
+    # --------------------------------------------------
+    # 🔟 Upload APK artifact
+    # --------------------------------------------------
+    - name: Upload APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: Media3-VVC-APV-IAMF-Experimental
+        path: output/Media3_VVC_APV_IAMF.apk
