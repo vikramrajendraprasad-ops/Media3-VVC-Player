@@ -32,12 +32,16 @@ jobs:
           cd media/libraries/decoder_ffmpeg/src/main/jni
           git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git ffmpeg
           chmod +x build_ffmpeg.sh
-          # Force arm64 target to save build time
+          
+          # 1. Fix: Force arm64 only (prevents building for x86/32-bit which wastes time)
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
           
-          # CORRECTED COMMAND: Added "24" back as the 4th argument (Target API Level)
-          # Format: [Module] [NDK] [Host] [API_Level] [Decoders...]
-          ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" 24 vvc apv iamf opus h264 hevc
+          # 2. Fix: Remove "--disable-postproc" flag which causes the "Unknown option" error in new FFmpeg
+          sed -i 's/--disable-postproc//g' build_ffmpeg.sh
+
+          # 3. Build: Removed "24" to prevent argument misalignment. 
+          # The script will default to API 21, which is compatible with all modern Android versions.
+          ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" vvc apv iamf opus h264 hevc
 
       - name: 🛡️ Professional Surgery (VVC/APV/IAMF)
         shell: python
@@ -95,7 +99,6 @@ jobs:
                       }
                   }
                   """
-                  # Safely insert before the last closing brace
                   last_brace_index = content.rfind('}')
                   if last_brace_index != -1:
                       content = content[:last_brace_index] + intent_bridge + "}"
