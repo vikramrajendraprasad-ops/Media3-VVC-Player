@@ -1,138 +1,142 @@
-name: Build Media3 Pro Player (VVC + APV + IAMF)
+name: Build Media3 Pro Player (VVC+APV+IAMF)
 
-on:
-  workflow_dispatch:
+on: [workflow_dispatch]
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      # --------------------------------------------------
-      # Checkout Media3 (STABLE TAG)
-      # --------------------------------------------------
       - name: Checkout Media3
         uses: actions/checkout@v4
         with:
           repository: androidx/media
           path: media
-          ref: 1.3.1
-          fetch-depth: 0
+          ref: main
 
-      # --------------------------------------------------
-      # System build tools
-      # --------------------------------------------------
       - name: Install Build Tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y nasm yasm make python3
+        run: sudo apt-get update && sudo apt-get install -y nasm yasm make git
 
-      # --------------------------------------------------
-      # Java + Android NDK
-      # --------------------------------------------------
       - name: Setup JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: temurin
-          java-version: 17
+          java-version: '17'
+          distribution: 'temurin'
 
-      - name: Setup Android NDK r26b
+      - name: Setup NDK r26b
         id: setup-ndk
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r26b
 
-      # --------------------------------------------------
-      # FFmpeg source
-      # --------------------------------------------------
-      - name: Clone FFmpeg
+      - name: Prepare FFmpeg Source
         run: |
           cd media/libraries/decoder_ffmpeg/src/main/jni
-          git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git ffmpeg
+          git clone --depth 1 -b main https://github.com/FFmpeg/FFmpeg.git ffmpeg
 
-      # --------------------------------------------------
-      # Build FFmpeg with required decoders (NDK PATH FIXED)
-      # --------------------------------------------------
-      - name: Build FFmpeg (VVC / APV / IAMF)
+      - name: Build Native Core (VVC+APV+IAMF+Opus)
         run: |
           cd media/libraries/decoder_ffmpeg/src/main/jni
           chmod +x build_ffmpeg.sh
+          # Limit ABI to arm64-v8a
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
+          # Enable postproc
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
+          # Patch DECODER_FLAGS for APV/VVC/IAMF (native decoders in FFmpeg main)
+          sed -i '/DECODER_FLAGS=/ s/="([^"]*)"/="\u0001 --enable-decoder=vvc --enable-decoder=apv --enable-decoder=iamf --enable-decoder=h264 --enable-decoder=hevc --enable-libopus"/' build_ffmpeg.sh
+          # Update FFmpeg to latest for APV support
+          cd ffmpeg && git pull origin main --depth=1 || true
+          cd ..
+          ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" "24"
 
-          ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" \
-            linux-x86_64 24 vvc apv iamf opus h264 hevc
-
-      # --------------------------------------------------
-      # Register codecs + force FFmpeg renderer
-      # --------------------------------------------------
-      - name: Register Codecs and Force FFmpeg
+      - name: 🛡️ Inject UI & Fixed Action Bridge
         run: |
-          LIB=$(find media -name "FfmpegLibrary.java" | head -n 1)
-          sed -i '/"video\/hevc"/a \
-            "video\/vvc",\n\
-            "video\/apv",\n\
-            "audio\/iamf",' "$LIB"
+          ACTIVITY=$(find media/demos/main -name "SampleChooserActivity.java" | head -n 1)
 
+          # 1. Inject The Purple Button (UI)
+          sed -i '/import android.widget.Button;/d' "$ACTIVITY"
+          sed -i '/setContentView(/a \
+            android.widget.Button proBtn = new android.widget.Button(this);\
+            proBtn.setText("📂 OPEN LOCAL FILE (VVC/APV/IAMF)");\
+            proBtn.setBackgroundColor(0xFF6200EE);\
+            proBtn.setTextColor(0xFFFFFFFF);\
+            proBtn.setPadding(30, 30, 30, 30);\
+            proBtn.setOnClickListener(v -> {\
+                android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);\
+                intent.addCategory(android.content.Intent.CATEGORY_OPENABLE);\
+                intent.setType("*/*");\
+                startActivityForResult(intent, 1001);\
+            });\
+            android.widget.FrameLayout.LayoutParams params = new android.widget.FrameLayout.LayoutParams(\
+                android.view.ViewGroup.LayoutParams.MATCH_PARENT,\
+                200\
+            );\
+            params.gravity = android.view.Gravity.TOP;\
+            addContentView(proBtn, params);' "$ACTIVITY"
+
+          # 2. Inject The Universal Bridge Logic (CLEANED JAVA VERSION)
+          python3 - <<EOF
+          import os
+          path = '$ACTIVITY'
+          if os.path.exists(path):
+              with open(path, 'r') as f:
+                  content = f.read()
+              last_brace = content.rfind('}')
+              
+              bridge_logic = '''\
+              @Override
+              public void onActivityResult(int requestCode, int resultCode, android.content.Intent data) {
+                  super.onActivityResult(requestCode, resultCode, data);
+                  if (requestCode == 1001 && resultCode == RESULT_OK && data != null && data.getData() != null) {
+                      android.net.Uri uri = data.getData();
+                      
+                      // Using the EXACT internal action string the Demo App expects
+                      android.content.Intent playerIntent = new android.content.Intent("androidx.media3.demo.main.action.VIEW");
+                      playerIntent.setClass(this, androidx.media3.demo.main.PlayerActivity.class);
+                      
+                      // Essential for file picker URIs
+                      playerIntent.setDataAndType(uri, "*/*");
+                      playerIntent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                      
+                      // Force the decoder preference
+                      playerIntent.putExtra("prefer_extension_decoders", true);
+                      playerIntent.putExtra("force_default_track_selector", true);
+                      
+                      // Set mandatory title/URI extras to avoid "null" errors
+                      playerIntent.putExtra("uri", uri.toString());
+                      playerIntent.putExtra("title", "Local VVC/APV/IAMF File");
+                      
+                      startActivity(playerIntent);
+                  }
+              }\
+              '''
+              if last_brace != -1:
+                  new_content = content[:last_brace] + bridge_logic + content[last_brace:]
+                  with open(path, 'w') as f:
+                      f.write(new_content)
+          EOF
+
+      - name: Register Codecs & Extensions
+        run: |
+          LIB_FILE=$(find media -name "FfmpegLibrary.java" | head -n 1)
+          sed -i '/"video/hevc"/a     "video/vvc",\
+    "video/apv",\
+    "audio/iamf",' "$LIB_FILE"
+          
           UTIL=$(find media -name "DemoUtil.java" | head -n 1)
-          sed -i 's/new DefaultRenderersFactory(context)/new DefaultRenderersFactory(context)\
-            .setEnableDecoderFallback(false)\
-            .setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)/' "$UTIL"
+          sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL"
+          
+          find media -name "AndroidManifest.xml" -exec sed -i 's/package="androidx.media3[^"]*"//g' {} +
 
-      # --------------------------------------------------
-      # FIX: IAMF Audio Renderer Mapping (NO SILENT AUDIO)
-      # --------------------------------------------------
-      - name: Enable IAMF in FFmpeg Audio Renderer
-        run: |
-          AUDIO=$(find media -name "FfmpegAudioRenderer.java" | head -n 1)
-
-          sed -i '/MimeTypes.AUDIO_OPUS/a \
-            case "audio/iamf":' "$AUDIO"
-
-      # --------------------------------------------------
-      # Allow APV / VVC / IAMF in Extractors (MP4 SAFE)
-      # --------------------------------------------------
-      - name: Allow APV / VVC / IAMF in Extractors
-        run: |
-          set +e
-
-          ATOM=$(find media -name "Atom.java" | head -n 1)
-          PARSER=$(find media -name "AtomParsers.java" | head -n 1)
-
-          if [ -n "$ATOM" ] && [ -n "$PARSER" ]; then
-            grep -q TYPE_vvc1 "$ATOM" || sed -i '/TYPE_hvc1/a \
-              public static final int TYPE_vvc1 = 0x76766331; // vvc1\n\
-              public static final int TYPE_vvi1 = 0x76766931; // vvi1\n\
-              public static final int TYPE_apv1 = 0x61707631; // apv1\n\
-              public static final int TYPE_iamf = 0x69616d66; // iamf' "$ATOM"
-
-            grep -q video/vvc "$PARSER" || sed -i '/switch *(atomType)/a \
-              case Atom.TYPE_vvc1:\n\
-              case Atom.TYPE_vvi1:\n\
-                return "video/vvc";\n\
-              case Atom.TYPE_apv1:\n\
-                return "video/apv";\n\
-              case Atom.TYPE_iamf:\n\
-                return "audio/iamf";' "$PARSER"
-          fi
-
-      # --------------------------------------------------
-      # Build APK
-      # --------------------------------------------------
-      - name: Build APK
+      - name: Final Compilation
         run: |
           cd media
           chmod +x gradlew
           ./gradlew :demo:assembleDebug
           mkdir -p ../output_apk
-          cp demo/build/outputs/apk/debug/*.apk \
-             ../output_apk/Media3_VVC_APV_IAMF.apk
+          find . -name "*.apk" -not -path "*/build-cache/*" -exec cp {} ../output_apk/VVC_Pro_Player.apk ;
 
-      # --------------------------------------------------
-      # Upload artifact
-      # --------------------------------------------------
-      - name: Upload APK
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Media3-VVC-APV-IAMF
-          path: output_apk/Media3_VVC_APV_IAMF.apk
+          name: Media3-Pro-Player
+          path: output_apk/VVC_Pro_Player.apk
