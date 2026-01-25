@@ -48,25 +48,30 @@ jobs:
           LIB_FILE=$(find media -name "FfmpegLibrary.java" | head -n 1)
           FACTORY=$(find media -name "DefaultRenderersFactory.java" | head -n 1)
           UTIL=$(find media -name "DemoUtil.java" | head -n 1)
+          AUDIO_RENDERER=$(find media -name "FfmpegAudioRenderer.java" | head -n 1)
 
-          # 2. Register Codecs in Native Bridge
+          # 2. Register Codecs in Native Bridge (The "Missing Link" for Playback)
           # We check if they are missing first to avoid duplicates
           grep -q "video/vvc" "$LIB_FILE" || sed -i '/"video\/hevc"/a \    "video\/vvc",\n    "video\/apv",' "$LIB_FILE"
           grep -q "audio/iamf" "$LIB_FILE" || sed -i '/"audio\/opus"/a \    "audio\/iamf",' "$LIB_FILE"
 
-          # 3. THE FIX: Force "PREFER" Mode (Without defining new variables)
+          # 3. Map IAMF in Audio Renderer (Crucial for Audio Playback)
+          # This connects the Java MimeType to the underlying extension
+          grep -q "AUDIO_IAMF" "$AUDIO_RENDERER" || sed -i '/case MimeTypes.AUDIO_OPUS:/a \      case MimeTypes.AUDIO_IAMF:' "$AUDIO_RENDERER"
+
+          # 4. THE FIX: Force "PREFER" Mode (Without defining new variables)
           # We replace the usage of OFF with PREFER. This works even if the variable is already defined.
           sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$FACTORY"
           sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL"
 
-          # 4. Clean Manifests for Gradle 8 compatibility [cite: 19]
+          # 5. Clean Manifests for Gradle 8 compatibility
           find media -name "AndroidManifest.xml" -exec sed -i 's/package="androidx.media3[^"]*"//g' {} +
 
       - name: 🛡️ Inject UI & Bridge Logic
         run: |
           ACTIVITY=$(find media/demos/main -name "SampleChooserActivity.java" | head -n 1)
           
-          # Inject UI Button [cite: 6, 7, 8]
+          # Inject UI Button
           sed -i '/import android.widget.Button;/d' "$ACTIVITY"
           sed -i '/setContentView/a \
             android.widget.Button b = new android.widget.Button(this);\
@@ -81,7 +86,7 @@ jobs:
             });\
             addContentView(b, new android.view.ViewGroup.LayoutParams(-1, 300));' "$ACTIVITY"
 
-          # Python Bridge: Logic to launch Player with Extension Preference [cite: 9, 10, 11]
+          # Python Bridge: Logic to launch Player with Extension Preference [cite: 9-17]
           python3 - <<EOF
           import os
           path = '$ACTIVITY'
@@ -97,7 +102,7 @@ jobs:
                       pi.setData(uri);
                       pi.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
                       
-                      // Critical: These flags force the player to use your custom FFmpeg build [cite: 14, 15]
+                      // Critical: These flags force the player to use your custom FFmpeg build
                       pi.putExtra("prefer_extension_decoders", true);
                       pi.putExtra("title", "Pro Media File");
                       startActivity(pi);
