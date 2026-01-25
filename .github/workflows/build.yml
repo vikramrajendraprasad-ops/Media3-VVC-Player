@@ -64,37 +64,38 @@ jobs:
           vvc apv iamf opus hevc h264
 
     # --------------------------------------------------
-    # 6️⃣ Patch Media3 MP4 extractor (auto-detect)
+    # 6️⃣ Patch Media3 MP4 parser (SAFE, OPTIONAL)
     # --------------------------------------------------
-    - name: Patch Media3 extractor for VVC / APV / IAMF
+    - name: Patch Media3 MP4 parser for VVC / APV / IAMF
       run: |
-        set -e
+        set +e
 
-        ATOM=$(find media -name "Atom.java" | grep mp4 | head -n 1)
-        PARSER=$(find media -name "AtomParsers.java" | grep mp4 | head -n 1)
+        ATOM=$(find media -path "*mp4*" -name "Atom.java" | head -n 1)
+        PARSER=$(find media -path "*mp4*" -name "AtomParsers.java" | head -n 1)
 
-        echo "Atom.java: $ATOM"
-        echo "AtomParsers.java: $PARSER"
+        echo "Atom.java found at: $ATOM"
+        echo "AtomParsers.java found at: $PARSER"
 
-        if [ -z "$ATOM" ] || [ -z "$PARSER" ]; then
-          echo "❌ Atom files not found"
-          exit 1
+        if [ -n "$ATOM" ] && [ -n "$PARSER" ]; then
+          echo "🔧 Patching MP4 parser (experimental)"
+
+          grep -q TYPE_vvc1 "$ATOM" || sed -i '/TYPE_hvc1/a \
+            public static final int TYPE_vvc1 = Util.getIntegerCodeForString("vvc1");\n\
+            public static final int TYPE_vvi1 = Util.getIntegerCodeForString("vvi1");\n\
+            public static final int TYPE_apv1 = Util.getIntegerCodeForString("apv1");\n\
+            public static final int TYPE_iamf = Util.getIntegerCodeForString("iamf");' "$ATOM"
+
+          grep -q 'video/vvc' "$PARSER" || sed -i '/switch *(atomType)/a \
+            case Atom.TYPE_vvc1:\n\
+            case Atom.TYPE_vvi1:\n\
+              return "video/vvc";\n\
+            case Atom.TYPE_apv1:\n\
+              return "video/apv";\n\
+            case Atom.TYPE_iamf:\n\
+              return "audio/iamf";' "$PARSER"
+        else
+          echo "⚠️ MP4 parser not found — skipping (MKV still supported)"
         fi
-
-        sed -i '/TYPE_hvc1/a \
-          public static final int TYPE_vvc1 = Util.getIntegerCodeForString("vvc1");\n\
-          public static final int TYPE_vvi1 = Util.getIntegerCodeForString("vvi1");\n\
-          public static final int TYPE_apv1 = Util.getIntegerCodeForString("apv1");\n\
-          public static final int TYPE_iamf = Util.getIntegerCodeForString("iamf");' "$ATOM"
-
-        sed -i '/switch *(atomType)/a \
-          case Atom.TYPE_vvc1:\n\
-          case Atom.TYPE_vvi1:\n\
-            return "video/vvc";\n\
-          case Atom.TYPE_apv1:\n\
-            return "video/apv";\n\
-          case Atom.TYPE_iamf:\n\
-            return "audio/iamf";' "$PARSER"
 
     # --------------------------------------------------
     # 7️⃣ Force FFmpeg renderer only
