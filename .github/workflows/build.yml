@@ -27,61 +27,84 @@ jobs:
         with:
           ndk-version: r26b
 
-      - name: Build Native Core (VVC+APV+IAMF)
+      - name: Build Native FFmpeg Core
         run: |
           cd media/libraries/decoder_ffmpeg/src/main/jni
           git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git ffmpeg
           chmod +x build_ffmpeg.sh
-          # Enable arm64 only to speed up build
+          # Force arm64 target to save build time
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
-          
-          # Pass specific decoders directly to the script
-          ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" \
-            "linux-x86_64" "24" vvc apv iamf opus h264 hevc
+          # Note: Removed "24" as it breaks the decoder list parsing. 
+          # Arguments: [Module Path] [NDK Path] [Host] [Decoders...]
+          ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" vvc apv iamf opus h264 hevc
 
-      - name: 🛡️ Surgery: Codecs & UI Injection
+      - name: 🛡️ Professional Surgery (VVC/APV/IAMF)
+        shell: python
         run: |
-          # 1. Register Codecs in FfmpegLibrary
-          LIB_FILE=$(find media -name "FfmpegLibrary.java" | head -n 1)
-          sed -i 's/"video\/hevc"/"video\/hevc", "video\/vvc", "video\/apv", "audio\/iamf"/g' "$LIB_FILE"
-
-          # 2. Force FFmpeg preference in DemoUtil
-          UTIL_FILE=$(find media -name "DemoUtil.java" | head -n 1)
-          sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL_FILE"
-
-          # 3. Inject Button & Logic into SampleChooserActivity (Updated Path)
-          ACTIVITY=$(find media/demo -name "SampleChooserActivity.java" | head -n 1)
-          
-          python3 - <<EOF
           import os
-          path = "$ACTIVITY"
-          with open(path, 'r') as f: content = f.read()
-          
-          # Inject the Button UI
-          btn_code = 'android.widget.Button b = new android.widget.Button(this); b.setText("📂 OPEN VVC/APV/IAMF"); b.setOnClickListener(v -> { android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT); i.setType("*/*"); startActivityForResult(i, 1001); }); addContentView(b, new android.view.ViewGroup.LayoutParams(-1, 250));'
-          content = content.replace('setContentView(view);', 'setContentView(view); ' + btn_code)
 
-          # Inject onActivityResult logic
-          logic = """
-          @Override
-          public void onActivityResult(int req, int res, android.content.Intent data) {
-              super.onActivityResult(req, res, data);
-              if (req == 1001 && res == -1 && data != null) {
-                  android.content.Intent i = new android.content.Intent("androidx.media3.demo.main.action.VIEW");
-                  i.setClass(this, androidx.media3.demo.main.PlayerActivity.class);
-                  i.setDataAndType(data.getData(), "*/*");
-                  i.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                  i.putExtra("prefer_extension_decoders", true);
-                  i.putExtra("title", "Local File");
-                  startActivity(i);
-              }
-          }
-          """
-          # Insert before the last closing brace
-          content = content.rstrip().rstrip('}') + logic + "}"
-          
-          with open(path, 'w') as f: f.write(content)
-          EOF
+          def patch_file(file_path, search_text, replace_text):
+              if os.path.exists(file_path):
+                  with open(file_path, 'r') as f:
+                      content = f.read()
+                  if search_text in content:
+                      new_content = content.replace(search_text, replace_text)
+                      with open(file_path, 'w') as f:
+                          f.write(new_content)
+                      print(f"Successfully patched: {file_path}")
+                  else:
+                      print(f"Warning: Search text not found in {file_path}")
+
+          # 1. Register New MIME Types in FFmpeg Extension
+          # Uses os.popen to find the file safely
+          lib_files = os.popen('find media -name "FfmpegLibrary.java"').read().splitlines()
+          if lib_files:
+              patch_file(lib_files[0], '"video/hevc"', '"video/hevc", "video/vvc", "video/apv", "audio/iamf"')
+
+          # 2. Enable Extension Priority in Demo Util
+          util_files = os.popen('find media -name "DemoUtil.java"').read().splitlines()
+          if util_files:
+              patch_file(util_files[0], "EXTENSION_RENDERER_MODE_OFF", "EXTENSION_RENDERER_MODE_PREFER")
+
+          # 3. Inject Button and Local File Logic into SampleChooserActivity
+          activity_files = os.popen('find media/demo -name "SampleChooserActivity.java"').read().splitlines()
+          if activity_files:
+              activity_file = activity_files[0]
+              with open(activity_file, 'r') as f:
+                  content = f.read()
+              
+              # Add the Purple "Open Local" Button Logic
+              btn_logic = 'android.widget.Button b = new android.widget.Button(this); b.setText("📂 OPEN VVC/APV/IAMF"); b.setBackgroundColor(0xFF6200EE); b.setTextColor(0xFFFFFFFF); b.setOnClickListener(v -> { android.content.Intent i = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT); i.setType("*/*"); startActivityForResult(i, 1001); }); addContentView(b, new android.view.ViewGroup.LayoutParams(-1, 200));'
+              
+              if 'setContentView(view);' in content:
+                  content = content.replace('setContentView(view);', f'setContentView(view); {btn_logic}')
+                  
+                  # Add the Intent Bridge logic for VVC routing
+                  # We inject this before the closing brace of the class
+                  intent_bridge = """
+                  @Override
+                  public void onActivityResult(int req, int res, android.content.Intent data) {
+                      super.onActivityResult(req, res, data);
+                      if (req == 1001 && res == -1 && data != null && data.getData() != null) {
+                          android.content.Intent pI = new android.content.Intent("androidx.media3.demo.main.action.VIEW");
+                          pI.setClass(this, androidx.media3.demo.main.PlayerActivity.class);
+                          pI.setDataAndType(data.getData(), "*/*");
+                          pI.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                          pI.putExtra("prefer_extension_decoders", true);
+                          pI.putExtra("title", "Custom VVC/APV Stream");
+                          startActivity(pI);
+                      }
+                  }
+                  """
+                  # Safely insert before the last closing brace
+                  last_brace_index = content.rfind('}')
+                  if last_brace_index != -1:
+                      content = content[:last_brace_index] + intent_bridge + "}"
+                      with open(activity_file, 'w') as f:
+                          f.write(content)
+                      print("Successfully injected Java logic.")
+              else:
+                   print("Error: Could not find setContentView hook.")
 
       - name: Final Compilation
         run: |
@@ -89,8 +112,8 @@ jobs:
           chmod +x gradlew
           ./gradlew :demo:assembleDebug
 
-      - name: Upload APK
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Media3-VVC-Pro
+          name: Media3-VVC-Pro-Player
           path: media/demo/build/outputs/apk/debug/*.apk
