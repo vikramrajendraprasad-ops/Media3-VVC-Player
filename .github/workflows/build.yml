@@ -38,7 +38,7 @@ jobs:
           chmod +x build_ffmpeg.sh
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
-          # Building with explicit support for vvc, apv, and iamf
+          # Enable specific codecs in the native FFmpeg build [cite: 5]
           ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" "24" vvc apv iamf opus h264 hevc
 
       - name: 🛡️ Surgery: Fix Duplicate Variable & Register Codecs
@@ -47,23 +47,20 @@ jobs:
           FACTORY=$(find media -name "DefaultRenderersFactory.java" | head -n 1)
           UTIL=$(find media -name "DemoUtil.java" | head -n 1)
 
-          # 1. Register Codecs in JNI Bridge (Only if missing)
-          grep -q "video/vvc" "$LIB_FILE" || sed -i '/"video\/hevc"/a \    "video\/vvc",\n    "video\/apv",' "$LIB_FILE"
-          grep -q "audio/iamf" "$LIB_FILE" || sed -i '/"audio\/opus"/a \    "audio\/iamf",' "$LIB_FILE"
-          
-          # 2. THE FIX: Change existing OFF to PREFER globally
-          # This bypasses the "variable already defined" error by not defining new variables
+          # THE FIX: Replace 'OFF' with 'PREFER' instead of defining new variables 
+          # This prevents the "variable EXTENSION_RENDERER_MODE_PREFER is already defined" error 
           sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$FACTORY"
           sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL"
-          
-          # 3. Clean Manifests
-          find media -name "AndroidManifest.xml" -exec sed -i 's/package="androidx.media3[^"]*"//g' {} +
+
+          # Register native codecs in the JNI bridge 
+          grep -q "video/vvc" "$LIB_FILE" || sed -i '/"video\/hevc"/a \    "video\/vvc",\n    "video\/apv",' "$LIB_FILE"
+          grep -q "audio/iamf" "$LIB_FILE" || sed -i '/"audio\/opus"/a \    "audio\/iamf",' "$LIB_FILE"
 
       - name: 🛡️ Inject UI & Bridge Logic
         run: |
           ACTIVITY=$(find media/demos/main -name "SampleChooserActivity.java" | head -n 1)
           
-          # Inject UI Button
+          # Inject UI Button for file selection [cite: 6, 7]
           sed -i '/import android.widget.Button;/d' "$ACTIVITY"
           sed -i '/setContentView/a \
             android.widget.Button b = new android.widget.Button(this);\
@@ -78,7 +75,7 @@ jobs:
             });\
             addContentView(b, new android.view.ViewGroup.LayoutParams(-1, 300));' "$ACTIVITY"
 
-          # Python helper for clean Java injection
+          # Use Python to safely append the onActivityResult bridge [cite: 9, 10]
           python3 - <<EOF
           import os
           path = '$ACTIVITY'
