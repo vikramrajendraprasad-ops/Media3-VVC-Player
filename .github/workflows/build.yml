@@ -1,5 +1,4 @@
 name: Build Media3 Pro Player (VVC+APV+IAMF)
-
 on: [workflow_dispatch]
 
 jobs:
@@ -74,30 +73,22 @@ jobs:
               with open(path, 'r') as f:
                   content = f.read()
               last_brace = content.rfind('}')
-              
-              bridge_logic = '''\
-              @Override
+              bridge_logic = '''@Override
               public void onActivityResult(int requestCode, int resultCode, android.content.Intent data) {
                   super.onActivityResult(requestCode, resultCode, data);
                   if (requestCode == 1001 && resultCode == RESULT_OK && data != null && data.getData() != null) {
                       android.net.Uri uri = data.getData();
-                      
                       android.content.Intent playerIntent = new android.content.Intent("androidx.media3.demo.main.action.VIEW");
                       playerIntent.setClass(this, androidx.media3.demo.main.PlayerActivity.class);
-                      
                       playerIntent.setDataAndType(uri, "*/*");
                       playerIntent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                      
                       playerIntent.putExtra("prefer_extension_decoders", true);
                       playerIntent.putExtra("force_default_track_selector", true);
-                      
                       playerIntent.putExtra("uri", uri.toString());
                       playerIntent.putExtra("title", "Local VVC/APV/IAMF File");
-                      
                       startActivity(playerIntent);
                   }
-              }\
-              '''
+              }'''
               if last_brace != -1:
                   new_content = content[:last_brace] + bridge_logic + content[last_brace:]
                   with open(path, 'w') as f:
@@ -108,16 +99,20 @@ jobs:
         run: |
           LIB_FILE=$(find media -name "FfmpegLibrary.java" | head -n 1)
           sed -i 's|"video/hevc"|"video/hevc", "video/vvc", "video/apv", "audio/iamf"|' "$LIB_FILE"
-          
           UTIL=$(find media -name "DemoUtil.java" | head -n 1)
           sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL"
-          
           find media -name "AndroidManifest.xml" -exec sed -i 's/package="androidx.media3[^"]*"//g' {} +
 
-            - name: Final Compilation
+      - name: Final Compilation
         run: |
           cd media
           chmod +x gradlew
           ./gradlew :demo:assembleDebug
           mkdir -p ../output_apk
           cp media/demos/main/build/outputs/apk/debug/*debug*.apk ../output_apk/VVC_Pro_Player.apk
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Media3-Pro-Player
+          path: output_apk/VVC_Pro_Player.apk
