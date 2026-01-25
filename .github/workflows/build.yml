@@ -31,7 +31,7 @@ jobs:
       - name: Prepare FFmpeg Source
         run: |
           cd media/libraries/decoder_ffmpeg/src/main/jni
-          git clone --depth 1 -b main https://github.com/FFmpeg/FFmpeg.git ffmpeg
+          git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git ffmpeg
 
       - name: Build Native Core (VVC+APV+IAMF+Opus)
         run: |
@@ -40,7 +40,7 @@ jobs:
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
           sed -i '/DECODER_FLAGS=/ s/="([^"]*)"/="\u0001 --enable-decoder=vvc --enable-decoder=apv --enable-decoder=iamf --enable-decoder=h264 --enable-decoder=hevc --enable-libopus"/' build_ffmpeg.sh
-          cd ffmpeg && git pull origin main --depth=1 || true
+          cd ffmpeg && git checkout master && git pull origin master --depth=1 || true
           cd ..
           ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" "24"
 
@@ -61,7 +61,7 @@ jobs:
                 startActivityForResult(intent, 1001);\
             });\
             android.widget.FrameLayout.LayoutParams params = new android.widget.FrameLayout.LayoutParams(\
-                android.view.ViewGroup.LayoutParams.MATCH_PARENT,\
+                android.view.ViewGroup.LayoutGroup.LayoutParams.MATCH_PARENT,\
                 200\
             );\
             params.gravity = android.view.Gravity.TOP;\
