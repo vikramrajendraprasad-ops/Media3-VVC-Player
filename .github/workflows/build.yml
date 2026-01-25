@@ -109,10 +109,10 @@ jobs:
           chmod +x gradlew
           ./gradlew :demo:assembleDebug
           mkdir -p ../output_apk
-          cp media/demos/main/build/outputs/apk/debug/*debug*.apk ../output_apk/VVC_Pro_Player.apk
+          cp demos/main/build/outputs/apk/debug/demo-with-decoder-extensions-debug.apk ../output_apk/VVC_Pro_Player.apk || true
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Media3-Pro-Player
-          path: output_apk/VVC_Pro_Player.apk
+          path: output_apk/
