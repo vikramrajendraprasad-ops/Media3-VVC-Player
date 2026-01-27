@@ -1,4 +1,4 @@
-name: Build Media3 Pro Player (Debug Edition)
+name: Build Media3 Pro Player (Nuclear Fix)
 on: [workflow_dispatch]
 
 jobs:
@@ -32,29 +32,28 @@ jobs:
           cd media/libraries/decoder_ffmpeg/src/main/jni
           git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git ffmpeg
           chmod +x build_ffmpeg.sh
-          
-          # 1. Force arm64 target
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
-          # 2. Fix "Unknown option" error
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
-
-          # 3. Build Core (API 21)
-          # We include 'vvc' and 'apv' explicitly
+          # Build API 21 with explicit decoder support
           ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" 21 vvc apv iamf opus h264 hevc
 
-      # ✅ DEBUGGER UI: Shows you what is happening on screen
-      - name: 🛡️ Inject UI & Debugger
+      # 🛡️ DEBUGGER UI: The button tells you if the Native Library loaded!
+      - name: 🛡️ Inject UI with Library Check
         run: |
           ACTIVITY=$(find media -name "SampleChooserActivity.java" | head -n 1)
           
-          # Inject the Button AND a Toast message for debugging
+          # This Java code checks if the FFmpeg library is loaded and updates the button text
+          # If button says "LIB MISSING", the .so file failed. If "OPEN VVC", it's good.
           sed -i '/setContentView/a \
+            boolean isLibLoaded = androidx.media3.decoder.ffmpeg.FfmpegLibrary.isAvailable();\
+            String status = isLibLoaded ? "📂 OPEN VVC (LIB OK)" : "⚠️ LIB MISSING (ERROR)";\
+            int color = isLibLoaded ? 0xFF6200EE : 0xFFFF0000;\
             android.widget.Button proBtn = new android.widget.Button(this);\
-            proBtn.setText("📂 OPEN VVC/APV (DEBUG)");\
-            proBtn.setBackgroundColor(0xFF6200EE);\
+            proBtn.setText(status);\
+            proBtn.setBackgroundColor(color);\
             proBtn.setTextColor(0xFFFFFFFF);\
             proBtn.setOnClickListener(v -> {\
-                android.widget.Toast.makeText(this, "Select your VVC/APV file...", android.widget.Toast.LENGTH_SHORT).show();\
+                android.widget.Toast.makeText(this, "Library Status: " + isLibLoaded, android.widget.Toast.LENGTH_LONG).show();\
                 android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);\
                 intent.addCategory(android.content.Intent.CATEGORY_OPENABLE);\
                 intent.setType("*/*");\
@@ -62,24 +61,36 @@ jobs:
             });\
             addContentView(proBtn, new android.view.ViewGroup.LayoutParams(-1, 200));' "$ACTIVITY"
 
-      # ✅ BRUTE FORCE LOGIC: Uses 'sed' to guarantee the code changes
-      - name: 🛡️ Inject Brute-Force Decoder Logic
+      # 🛡️ THE NUCLEAR PATCH: Rewrite the Codec Mapper
+      # We delete the old 'getCodecName' and force-insert our own.
+      - name: 🛡️ Force-Rewrite Decoder Logic
         run: |
           LIB_FILE=$(find media -name "FfmpegLibrary.java" | head -n 1)
           
-          # 1. Register MIME Types (Standard replacement)
+          # 1. Add ALL needed MIME types
           sed -i 's/"video\/hevc"/"video\/hevc", "video\/vvc", "video\/apv", "audio\/iamf", "video\/x-unknown"/g' "$LIB_FILE"
 
-          # 2. THE BRUTE FORCE HOOK
-          # We hijack the 'getCodecName' method. 
-          # We force it to check for partial strings (vvc, apv) OR "unknown" files.
-          # This assumes if it's "video/x-unknown", it's probably your VVC file.
+          # 2. DELETE the old return statements to prevent conflicts
+          sed -i '/return "hevc";/d' "$LIB_FILE"
+          sed -i '/return "h264";/d' "$LIB_FILE"
+          sed -i '/return "vp9";/d' "$LIB_FILE"
+          sed -i '/return null;/d' "$LIB_FILE"
           
-          sed -i 's/return "hevc";/if (mimeType.contains("vvc")) return "vvc"; if (mimeType.contains("apv")) return "apv"; if (mimeType.contains("unknown")) return "vvc"; return "hevc";/g' "$LIB_FILE"
-          
-          echo "✅ Injected Brute Force Logic into FfmpegLibrary.java"
-          
-          # 3. Force Extension Renderer
+          # 3. OVERWRITE the switch statement with our IF Logic
+          # We search for the start of the function and inject the whole logic block immediately after.
+          # This forces VVC/APV detection before anything else.
+          sed -i '/public static String getCodecName/a \
+            if (mimeType.contains("vvc")) return "vvc";\
+            if (mimeType.contains("apv")) return "apv";\
+            if (mimeType.contains("iamf")) return "iamf";\
+            if (mimeType.contains("unknown")) return "vvc";\
+            if (mimeType.equals("video/hevc")) return "hevc";\
+            if (mimeType.equals("video/avc")) return "h264";\
+            return null;' "$LIB_FILE"
+            
+          echo "✅ Nuclear Patch Applied: Old logic removed, New logic injected."
+
+          # 4. Force Extension Usage
           UTIL=$(find media -name "DemoUtil.java" | head -n 1)
           sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL"
 
@@ -87,9 +98,7 @@ jobs:
         shell: python
         run: |
           import os
-          # We use Python only for this complex block insert
           act_file = os.popen('find media -name "SampleChooserActivity.java" | head -n 1').read().strip()
-          
           if os.path.exists(act_file):
               with open(act_file, 'r') as f:
                   content = f.read()
@@ -104,7 +113,7 @@ jobs:
                       pI.setDataAndType(data.getData(), "*/*");
                       pI.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
                       pI.putExtra("prefer_extension_decoders", true);
-                      pI.putExtra("title", "Debug Stream");
+                      pI.putExtra("title", "Local Stream");
                       startActivity(pI);
                   }
               }
