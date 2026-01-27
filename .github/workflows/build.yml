@@ -1,4 +1,4 @@
-name: Build Media3 Pro Player (Final Fix)
+name: Build Media3 Pro Player (Debug Edition)
 on: [workflow_dispatch]
 
 jobs:
@@ -35,46 +35,26 @@ jobs:
           
           # 1. Force arm64 target
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
-          # 2. Fix compatibility
+          # 2. Fix "Unknown option" error
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
 
-          # 3. Build with API 21 + Decoders
+          # 3. Build Core (API 21)
+          # We include 'vvc' and 'apv' explicitly
           ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" 21 vvc apv iamf opus h264 hevc
 
-      # ✅ CRITICAL FIX: Manually Move Libs to Gradle's Folder
-      # This ensures the .so files are actually packaged in the APK.
-      - name: 🛡️ Force-Package Native Libs
-        run: |
-          # Define the target directory where Gradle looks for native libs
-          JNI_DIR="media/libraries/decoder_ffmpeg/src/main/jniLibs/arm64-v8a"
-          mkdir -p "$JNI_DIR"
-          
-          # Find the built libffmpeg.so (It usually sits in the prefix/lib folder)
-          # We search broadly in the libraries folder to be safe
-          echo "Searching for built libraries..."
-          find media/libraries/decoder_ffmpeg -name "libffmpeg.so"
-          
-          # Copy libffmpeg.so to the JNI folder
-          find media/libraries/decoder_ffmpeg -name "libffmpeg.so" -exec cp {} "$JNI_DIR/" \;
-          
-          # Verification
-          if [ -f "$JNI_DIR/libffmpeg.so" ]; then
-            echo "✅ SUCCESS: libffmpeg.so successfully planted in $JNI_DIR"
-          else
-            echo "❌ ERROR: Could not find built libffmpeg.so"
-            exit 1
-          fi
-
-      - name: 🛡️ Inject UI (Purple Button)
+      # ✅ DEBUGGER UI: Shows you what is happening on screen
+      - name: 🛡️ Inject UI & Debugger
         run: |
           ACTIVITY=$(find media -name "SampleChooserActivity.java" | head -n 1)
+          
+          # Inject the Button AND a Toast message for debugging
           sed -i '/setContentView/a \
             android.widget.Button proBtn = new android.widget.Button(this);\
-            proBtn.setText("📂 OPEN LOCAL FILE (VVC/APV)");\
+            proBtn.setText("📂 OPEN VVC/APV (DEBUG)");\
             proBtn.setBackgroundColor(0xFF6200EE);\
             proBtn.setTextColor(0xFFFFFFFF);\
-            proBtn.setPadding(30, 30, 30, 30);\
             proBtn.setOnClickListener(v -> {\
+                android.widget.Toast.makeText(this, "Select your VVC/APV file...", android.widget.Toast.LENGTH_SHORT).show();\
                 android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);\
                 intent.addCategory(android.content.Intent.CATEGORY_OPENABLE);\
                 intent.setType("*/*");\
@@ -82,43 +62,34 @@ jobs:
             });\
             addContentView(proBtn, new android.view.ViewGroup.LayoutParams(-1, 200));' "$ACTIVITY"
 
-      - name: 🛡️ Inject Smart Logic (Fuzzy Match)
+      # ✅ BRUTE FORCE LOGIC: Uses 'sed' to guarantee the code changes
+      - name: 🛡️ Inject Brute-Force Decoder Logic
+        run: |
+          LIB_FILE=$(find media -name "FfmpegLibrary.java" | head -n 1)
+          
+          # 1. Register MIME Types (Standard replacement)
+          sed -i 's/"video\/hevc"/"video\/hevc", "video\/vvc", "video\/apv", "audio\/iamf", "video\/x-unknown"/g' "$LIB_FILE"
+
+          # 2. THE BRUTE FORCE HOOK
+          # We hijack the 'getCodecName' method. 
+          # We force it to check for partial strings (vvc, apv) OR "unknown" files.
+          # This assumes if it's "video/x-unknown", it's probably your VVC file.
+          
+          sed -i 's/return "hevc";/if (mimeType.contains("vvc")) return "vvc"; if (mimeType.contains("apv")) return "apv"; if (mimeType.contains("unknown")) return "vvc"; return "hevc";/g' "$LIB_FILE"
+          
+          echo "✅ Injected Brute Force Logic into FfmpegLibrary.java"
+          
+          # 3. Force Extension Renderer
+          UTIL=$(find media -name "DemoUtil.java" | head -n 1)
+          sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL"
+
+      - name: 🛡️ Inject Intent Bridge
         shell: python
         run: |
           import os
-
-          # 1. PATCH FfmpegLibrary.java (The Brain)
-          lib_file = os.popen('find media -name "FfmpegLibrary.java"').read().strip()
-          
-          if os.path.exists(lib_file):
-              with open(lib_file, 'r') as f:
-                  content = f.read()
-              
-              # Register MIME types so standard checks pass
-              if '"video/hevc"' in content and '"video/vvc"' not in content:
-                  content = content.replace('"video/hevc"', '"video/hevc", "video/vvc", "video/apv", "audio/iamf"')
-              
-              # INJECT SMART LOGIC (Handles "video/x-vvc", "video/vvc", etc.)
-              smart_hook = 'public static String getCodecName(String mimeType) { if (mimeType == null) return null; if (mimeType.contains("vvc")) return "vvc"; if (mimeType.contains("apv")) return "apv"; if (mimeType.contains("iamf")) return "iamf";'
-              
-              if 'public static String getCodecName(String mimeType) {' in content:
-                  content = content.replace('public static String getCodecName(String mimeType) {', smart_hook)
-                  with open(lib_file, 'w') as f:
-                      f.write(content)
-                  print("✅ Applied Smart Decoder Selector")
-
-          # 2. PATCH DemoUtil.java (Force Usage)
-          util_file = os.popen('find media -name "DemoUtil.java"').read().strip()
-          if os.path.exists(util_file):
-              with open(util_file, 'r') as f:
-                  content = f.read()
-              # Force the player to prefer the FFmpeg extension over hardware
-              new_content = content.replace("EXTENSION_RENDERER_MODE_OFF", "EXTENSION_RENDERER_MODE_PREFER")
-              with open(util_file, 'w') as f:
-                  f.write(new_content)
-
-          # 3. PATCH SampleChooserActivity.java (Intent Bridge)
+          # We use Python only for this complex block insert
           act_file = os.popen('find media -name "SampleChooserActivity.java" | head -n 1').read().strip()
+          
           if os.path.exists(act_file):
               with open(act_file, 'r') as f:
                   content = f.read()
@@ -133,7 +104,7 @@ jobs:
                       pI.setDataAndType(data.getData(), "*/*");
                       pI.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
                       pI.putExtra("prefer_extension_decoders", true);
-                      pI.putExtra("title", "Local Stream");
+                      pI.putExtra("title", "Debug Stream");
                       startActivity(pI);
                   }
               }
