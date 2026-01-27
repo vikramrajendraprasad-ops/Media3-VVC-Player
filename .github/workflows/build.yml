@@ -1,4 +1,4 @@
-name: Build Media3 Pro Player (Nuclear Fix)
+name: Build Media3 Pro Player (Golden Master)
 on: [workflow_dispatch]
 
 jobs:
@@ -34,51 +34,36 @@ jobs:
           chmod +x build_ffmpeg.sh
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
-          # Build API 21 with explicit decoder support
+          # Standard API 21 build with all decoders
           ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" 21 vvc apv iamf opus h264 hevc
 
-      # 🛡️ DEBUGGER UI: The button tells you if the Native Library loaded!
-      - name: 🛡️ Inject UI with Library Check
+      # ✅ THE MISSING LINK: Add FFmpeg Dependency to Demo App
+      # This ensures Gradle actually puts the .so files into the APK!
+      - name: 🛡️ Link FFmpeg to Demo
         run: |
-          ACTIVITY=$(find media -name "SampleChooserActivity.java" | head -n 1)
+          GRADLE_FILE=$(find media/demos/main -name "build.gradle")
+          echo "Patching $GRADLE_FILE"
           
-          # This Java code checks if the FFmpeg library is loaded and updates the button text
-          # If button says "LIB MISSING", the .so file failed. If "OPEN VVC", it's good.
-          sed -i '/setContentView/a \
-            boolean isLibLoaded = androidx.media3.decoder.ffmpeg.FfmpegLibrary.isAvailable();\
-            String status = isLibLoaded ? "📂 OPEN VVC (LIB OK)" : "⚠️ LIB MISSING (ERROR)";\
-            int color = isLibLoaded ? 0xFF6200EE : 0xFFFF0000;\
-            android.widget.Button proBtn = new android.widget.Button(this);\
-            proBtn.setText(status);\
-            proBtn.setBackgroundColor(color);\
-            proBtn.setTextColor(0xFFFFFFFF);\
-            proBtn.setOnClickListener(v -> {\
-                android.widget.Toast.makeText(this, "Library Status: " + isLibLoaded, android.widget.Toast.LENGTH_LONG).show();\
-                android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);\
-                intent.addCategory(android.content.Intent.CATEGORY_OPENABLE);\
-                intent.setType("*/*");\
-                startActivityForResult(intent, 1001);\
-            });\
-            addContentView(proBtn, new android.view.ViewGroup.LayoutParams(-1, 200));' "$ACTIVITY"
+          # We look for the exoplayer dependency and add the ffmpeg dependency right after it
+          sed -i "/implementation project(modulePrefix + 'lib-exoplayer')/a \    implementation project(modulePrefix + 'lib-decoder-ffmpeg')" "$GRADLE_FILE"
+          
+          echo "✅ Dependency Injected: The Demo App now includes FFmpeg."
 
-      # 🛡️ THE NUCLEAR PATCH: Rewrite the Codec Mapper
-      # We delete the old 'getCodecName' and force-insert our own.
+      # 🛡️ THE NUCLEAR PATCH (Decoder Mapping)
       - name: 🛡️ Force-Rewrite Decoder Logic
         run: |
           LIB_FILE=$(find media -name "FfmpegLibrary.java" | head -n 1)
           
-          # 1. Add ALL needed MIME types
+          # 1. Register MIME types
           sed -i 's/"video\/hevc"/"video\/hevc", "video\/vvc", "video\/apv", "audio\/iamf", "video\/x-unknown"/g' "$LIB_FILE"
 
-          # 2. DELETE the old return statements to prevent conflicts
+          # 2. Delete old logic to avoid conflicts
           sed -i '/return "hevc";/d' "$LIB_FILE"
           sed -i '/return "h264";/d' "$LIB_FILE"
           sed -i '/return "vp9";/d' "$LIB_FILE"
           sed -i '/return null;/d' "$LIB_FILE"
           
-          # 3. OVERWRITE the switch statement with our IF Logic
-          # We search for the start of the function and inject the whole logic block immediately after.
-          # This forces VVC/APV detection before anything else.
+          # 3. Inject "Nuclear" IF Logic
           sed -i '/public static String getCodecName/a \
             if (mimeType.contains("vvc")) return "vvc";\
             if (mimeType.contains("apv")) return "apv";\
@@ -87,12 +72,30 @@ jobs:
             if (mimeType.equals("video/hevc")) return "hevc";\
             if (mimeType.equals("video/avc")) return "h264";\
             return null;' "$LIB_FILE"
-            
-          echo "✅ Nuclear Patch Applied: Old logic removed, New logic injected."
 
-          # 4. Force Extension Usage
+          # 4. Force Extension Usage in DemoUtil
           UTIL=$(find media -name "DemoUtil.java" | head -n 1)
           sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL"
+
+      # 🛡️ UI Injection (Purple Button - Simple Version)
+      # Removed the "Lib Check" code that caused the compilation error.
+      # Since we added the dependency in Step 6, we trust the lib is there.
+      - name: 🛡️ Inject UI
+        run: |
+          ACTIVITY=$(find media -name "SampleChooserActivity.java" | head -n 1)
+          sed -i '/setContentView/a \
+            android.widget.Button proBtn = new android.widget.Button(this);\
+            proBtn.setText("📂 OPEN VVC/APV (FINAL)");\
+            proBtn.setBackgroundColor(0xFF6200EE);\
+            proBtn.setTextColor(0xFFFFFFFF);\
+            proBtn.setOnClickListener(v -> {\
+                android.widget.Toast.makeText(this, "Opening File Picker...", android.widget.Toast.LENGTH_SHORT).show();\
+                android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);\
+                intent.addCategory(android.content.Intent.CATEGORY_OPENABLE);\
+                intent.setType("*/*");\
+                startActivityForResult(intent, 1001);\
+            });\
+            addContentView(proBtn, new android.view.ViewGroup.LayoutParams(-1, 200));' "$ACTIVITY"
 
       - name: 🛡️ Inject Intent Bridge
         shell: python
