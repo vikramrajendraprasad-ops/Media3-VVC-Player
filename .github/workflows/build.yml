@@ -1,4 +1,4 @@
-name: Build Media3 Pro Player (Golden Master)
+name: Build Media3 Pro Player (Syntax Fixed)
 on: [workflow_dispatch]
 
 jobs:
@@ -34,62 +34,94 @@ jobs:
           chmod +x build_ffmpeg.sh
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
-          # Standard API 21 build with all decoders
+          # Standard API 21 build
           ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" 21 vvc apv iamf opus h264 hevc
 
-      # ✅ THE MISSING LINK: Add FFmpeg Dependency to Demo App
-      # This ensures Gradle actually puts the .so files into the APK!
+      # ✅ STEP 1: Link FFmpeg to Demo (Crucial for "Lib Missing" fix)
       - name: 🛡️ Link FFmpeg to Demo
         run: |
           GRADLE_FILE=$(find media/demos/main -name "build.gradle")
-          echo "Patching $GRADLE_FILE"
-          
-          # We look for the exoplayer dependency and add the ffmpeg dependency right after it
+          # Add the dependency so the .so file gets packaged
           sed -i "/implementation project(modulePrefix + 'lib-exoplayer')/a \    implementation project(modulePrefix + 'lib-decoder-ffmpeg')" "$GRADLE_FILE"
-          
-          echo "✅ Dependency Injected: The Demo App now includes FFmpeg."
+          echo "✅ Dependency Injected"
 
-      # 🛡️ THE NUCLEAR PATCH (Decoder Mapping)
-      - name: 🛡️ Force-Rewrite Decoder Logic
+      # ✅ STEP 2: Rewrite FfmpegLibrary.java (Fixes "Missing Return" Error)
+      - name: 🛡️ Safely Rewrite Decoder Logic
+        shell: python
         run: |
-          LIB_FILE=$(find media -name "FfmpegLibrary.java" | head -n 1)
-          
-          # 1. Register MIME types
-          sed -i 's/"video\/hevc"/"video\/hevc", "video\/vvc", "video\/apv", "audio\/iamf", "video\/x-unknown"/g' "$LIB_FILE"
+          import os
+          import re
 
-          # 2. Delete old logic to avoid conflicts
-          sed -i '/return "hevc";/d' "$LIB_FILE"
-          sed -i '/return "h264";/d' "$LIB_FILE"
-          sed -i '/return "vp9";/d' "$LIB_FILE"
-          sed -i '/return null;/d' "$LIB_FILE"
+          lib_file = os.popen('find media -name "FfmpegLibrary.java"').read().strip()
           
-          # 3. Inject "Nuclear" IF Logic
-          sed -i '/public static String getCodecName/a \
-            if (mimeType.contains("vvc")) return "vvc";\
-            if (mimeType.contains("apv")) return "apv";\
-            if (mimeType.contains("iamf")) return "iamf";\
-            if (mimeType.contains("unknown")) return "vvc";\
-            if (mimeType.equals("video/hevc")) return "hevc";\
-            if (mimeType.equals("video/avc")) return "h264";\
-            return null;' "$LIB_FILE"
+          if os.path.exists(lib_file):
+              with open(lib_file, 'r') as f:
+                  content = f.read()
 
-          # 4. Force Extension Usage in DemoUtil
+              # 1. Register MIME Types
+              if '"video/hevc"' in content and '"video/vvc"' not in content:
+                  content = content.replace('"video/hevc"', '"video/hevc", "video/vvc", "video/apv", "audio/iamf", "video/x-unknown"')
+
+              # 2. REPLACE THE ENTIRE METHOD (Syntactically Safe)
+              # We use regex to find the method and replace it with our own CLEAN version.
+              # This prevents "missing return statement" errors.
+              
+              new_method = """
+              @androidx.annotation.Nullable
+              public static String getCodecName(String mimeType) {
+                if (mimeType == null) return null;
+                // Custom overrides
+                if (mimeType.contains("vvc")) return "vvc";
+                if (mimeType.contains("apv")) return "apv";
+                if (mimeType.contains("iamf")) return "iamf";
+                
+                // Fallbacks for standard types
+                switch (mimeType) {
+                  case "video/hevc": return "hevc";
+                  case "video/avc": return "h264";
+                  case "video/vp9": return "vp9";
+                  case "audio/opus": return "opus";
+                  default: return null;
+                }
+              }
+              """
+              
+              # Regex looks for: public static String getCodecName(...) { ...body... }
+              # We replace it blindly to ensure OUR logic is the only logic.
+              pattern = r'public\s+static\s+String\s+getCodecName\s*\([^)]*\)\s*\{[^}]*\}'
+              
+              # If the method is long, regex might miss the closing brace, so we use a simpler anchor replacement
+              if 'public static String getCodecName' in content:
+                  # We simply comment out the old method start and inject ours before it? 
+                  # Better: Replace the signature and inject the body + an early return, effectively silencing the old code.
+                  
+                  # STRATEGY: Rename the old method to hide it, and add ours.
+                  content = content.replace('public static String getCodecName', 'public static String getCodecName_OLD')
+                  
+                  # Find the class end (last brace) to insert our new method
+                  last_brace = content.rfind('}')
+                  if last_brace != -1:
+                      content = content[:last_brace] + new_method + "}"
+                      
+                  with open(lib_file, 'w') as f:
+                      f.write(content)
+                  print("✅ FfmpegLibrary.java Patched (Method Swapped)")
+
+      - name: 🛡️ Force Extension Usage
+        run: |
           UTIL=$(find media -name "DemoUtil.java" | head -n 1)
           sed -i 's/EXTENSION_RENDERER_MODE_OFF/EXTENSION_RENDERER_MODE_PREFER/g' "$UTIL"
 
-      # 🛡️ UI Injection (Purple Button - Simple Version)
-      # Removed the "Lib Check" code that caused the compilation error.
-      # Since we added the dependency in Step 6, we trust the lib is there.
-      - name: 🛡️ Inject UI
+      - name: 🛡️ Inject UI (Purple Button)
         run: |
           ACTIVITY=$(find media -name "SampleChooserActivity.java" | head -n 1)
           sed -i '/setContentView/a \
             android.widget.Button proBtn = new android.widget.Button(this);\
-            proBtn.setText("📂 OPEN VVC/APV (FINAL)");\
+            proBtn.setText("📂 OPEN VVC/APV (FIXED)");\
             proBtn.setBackgroundColor(0xFF6200EE);\
             proBtn.setTextColor(0xFFFFFFFF);\
             proBtn.setOnClickListener(v -> {\
-                android.widget.Toast.makeText(this, "Opening File Picker...", android.widget.Toast.LENGTH_SHORT).show();\
+                android.widget.Toast.makeText(this, "Selecting File...", android.widget.Toast.LENGTH_SHORT).show();\
                 android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);\
                 intent.addCategory(android.content.Intent.CATEGORY_OPENABLE);\
                 intent.setType("*/*");\
