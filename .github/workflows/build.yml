@@ -1,4 +1,4 @@
-name: Build Media3 Pro Player (Syntax Fixed)
+name: Build Media3 Pro Player (Video Fix)
 on: [workflow_dispatch]
 
 jobs:
@@ -32,50 +32,48 @@ jobs:
           cd media/libraries/decoder_ffmpeg/src/main/jni
           git clone --depth 1 https://github.com/FFmpeg/FFmpeg.git ffmpeg
           chmod +x build_ffmpeg.sh
+          
+          # 1. Force arm64
           sed -i 's/ENABLED_ABIS=(.*/ENABLED_ABIS=(arm64-v8a)/g' build_ffmpeg.sh
+          # 2. Fix "Unknown option"
           sed -i 's/--disable-postproc//g' build_ffmpeg.sh
-          # Standard API 21 build
+          
+          # ✅ CRITICAL FIX: Enable Color Conversion (libswscale)
+          # The default script disables this, causing the black screen on video!
+          sed -i 's/--disable-swscale/--enable-swscale/g' build_ffmpeg.sh
+          
+          # 3. Build with all decoders
           ./build_ffmpeg.sh "$(pwd)/.." "${{ steps.setup-ndk.outputs.ndk-path }}" "linux-x86_64" 21 vvc apv iamf opus h264 hevc
 
-      # ✅ STEP 1: Link FFmpeg to Demo (Crucial for "Lib Missing" fix)
       - name: 🛡️ Link FFmpeg to Demo
         run: |
           GRADLE_FILE=$(find media/demos/main -name "build.gradle")
-          # Add the dependency so the .so file gets packaged
           sed -i "/implementation project(modulePrefix + 'lib-exoplayer')/a \    implementation project(modulePrefix + 'lib-decoder-ffmpeg')" "$GRADLE_FILE"
           echo "✅ Dependency Injected"
 
-      # ✅ STEP 2: Rewrite FfmpegLibrary.java (Fixes "Missing Return" Error)
       - name: 🛡️ Safely Rewrite Decoder Logic
         shell: python
         run: |
           import os
-          import re
-
           lib_file = os.popen('find media -name "FfmpegLibrary.java"').read().strip()
           
           if os.path.exists(lib_file):
               with open(lib_file, 'r') as f:
                   content = f.read()
 
-              # 1. Register MIME Types
+              # Register MIME Types
               if '"video/hevc"' in content and '"video/vvc"' not in content:
                   content = content.replace('"video/hevc"', '"video/hevc", "video/vvc", "video/apv", "audio/iamf", "video/x-unknown"')
 
-              # 2. REPLACE THE ENTIRE METHOD (Syntactically Safe)
-              # We use regex to find the method and replace it with our own CLEAN version.
-              # This prevents "missing return statement" errors.
-              
+              # Decoder Selection Logic
               new_method = """
               @androidx.annotation.Nullable
               public static String getCodecName(String mimeType) {
                 if (mimeType == null) return null;
-                // Custom overrides
                 if (mimeType.contains("vvc")) return "vvc";
                 if (mimeType.contains("apv")) return "apv";
                 if (mimeType.contains("iamf")) return "iamf";
                 
-                // Fallbacks for standard types
                 switch (mimeType) {
                   case "video/hevc": return "hevc";
                   case "video/avc": return "h264";
@@ -86,26 +84,15 @@ jobs:
               }
               """
               
-              # Regex looks for: public static String getCodecName(...) { ...body... }
-              # We replace it blindly to ensure OUR logic is the only logic.
-              pattern = r'public\s+static\s+String\s+getCodecName\s*\([^)]*\)\s*\{[^}]*\}'
-              
-              # If the method is long, regex might miss the closing brace, so we use a simpler anchor replacement
               if 'public static String getCodecName' in content:
-                  # We simply comment out the old method start and inject ours before it? 
-                  # Better: Replace the signature and inject the body + an early return, effectively silencing the old code.
-                  
-                  # STRATEGY: Rename the old method to hide it, and add ours.
                   content = content.replace('public static String getCodecName', 'public static String getCodecName_OLD')
-                  
-                  # Find the class end (last brace) to insert our new method
                   last_brace = content.rfind('}')
                   if last_brace != -1:
                       content = content[:last_brace] + new_method + "}"
                       
                   with open(lib_file, 'w') as f:
                       f.write(content)
-                  print("✅ FfmpegLibrary.java Patched (Method Swapped)")
+                  print("✅ FfmpegLibrary.java Patched")
 
       - name: 🛡️ Force Extension Usage
         run: |
@@ -117,11 +104,11 @@ jobs:
           ACTIVITY=$(find media -name "SampleChooserActivity.java" | head -n 1)
           sed -i '/setContentView/a \
             android.widget.Button proBtn = new android.widget.Button(this);\
-            proBtn.setText("📂 OPEN VVC/APV (FIXED)");\
+            proBtn.setText("📂 OPEN VVC (VIDEO FIX)");\
             proBtn.setBackgroundColor(0xFF6200EE);\
             proBtn.setTextColor(0xFFFFFFFF);\
             proBtn.setOnClickListener(v -> {\
-                android.widget.Toast.makeText(this, "Selecting File...", android.widget.Toast.LENGTH_SHORT).show();\
+                android.widget.Toast.makeText(this, "Opening Video...", android.widget.Toast.LENGTH_SHORT).show();\
                 android.content.Intent intent = new android.content.Intent(android.content.Intent.ACTION_OPEN_DOCUMENT);\
                 intent.addCategory(android.content.Intent.CATEGORY_OPENABLE);\
                 intent.setType("*/*");\
